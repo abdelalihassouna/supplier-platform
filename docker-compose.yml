@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # Next.js Application
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - USE_POSTGRESQL=true
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DATABASE=supplier_platform
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres123
+      - POSTGRES_URL=postgresql://postgres:postgres123@postgres:5432/supplier_platform
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env.local
+    restart: unless-stopped
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: supplier_platform
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/postgresql_migration.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./scripts/02_add_missing_tables.sql:/docker-entrypoint-initdb.d/02_missing_tables.sql
+      - ./scripts/03_add_document_extraction_tables.sql:/docker-entrypoint-initdb.d/03_document_tables.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis (Optional - for caching)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
