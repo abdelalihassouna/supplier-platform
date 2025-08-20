@@ -309,3 +309,88 @@ Tabella `supplier_sync_logs` traccia:
 - Metriche performance API
 - Alert per errori ricorrenti
 - Report utilizzo storage
+
+## 10. ANALISI DOCUMENTI (OCR MISTRAL)
+
+### 10.1 Panoramica
+Il sistema consente l’estrazione di dati strutturati dai documenti (CCIAA, DURC, ISO, SOA, VISURA) tramite OCR Mistral e la loro revisione/validazione nel frontend.
+
+Componenti principali:
+- Frontend: `components/document-analysis-dialog.tsx`
+- API: `app/api/documents/analyze/route.ts` (GET/POST), `app/api/documents/validate/route.ts` (POST/GET)
+- DB: Tabella `document_analysis` (schema in `scripts/03_document_analysis_schema.sql`)
+- Client OCR: `lib/mistral-client.ts`
+- Schemi/validazione: `lib/document-schemas.ts`
+
+### 10.2 Flusso Utente (UI)
+1. Apertura dialog da `SupplierDetailView` (tab Documents), pulsante “Analyze” per ogni allegato.
+2. Selezione automatica del tipo documento nel dropdown in base a `attachment.cert_type` (auto-fill non invasivo, case-insensitive). È possibile cambiarlo manualmente.
+3. Avvio analisi (POST `/api/documents/analyze`). Stato mostrato in UI, al termine lo step passa automaticamente alla tab “Review & Validate”.
+4. Visualizzazione campi estratti in base al tipo documento, con editor inline e note di validazione.
+5. Validazione (POST `/api/documents/validate`) con stati: `approved`, `rejected`, `needs_review`.
+6. Nessun reload di pagina: la dialog rimane aperta; la pagina padre aggiorna i dati in-place.
+
+Migliorie UI implementate:
+- Auto-selezione del tipo documento dal pannello “Document Information”.
+- Post-analisi: popolamento immediato dei campi e passaggio alla tab “Review”.
+- Rimozione del reload: aggiorna i dati del fornitore senza cambiare tab o chiudere la dialog.
+
+### 10.3 API di Analisi (`/api/documents/analyze`)
+- POST: esegue OCR su un allegato e salva/aggiorna il record in `document_analysis`.
+  - Input: `{ attachmentId: UUID, docType: 'CCIAA'|'DURC'|'ISO'|'SOA'|'VISURA', pages?: number[] }`
+  - Output: `{ success: true, data: { ...document_analysis, extracted_fields } }`
+- GET: recupera analisi per `attachmentId` o per `supplierId`.
+  - Normalizzazione retro-compatibile degli `extracted_fields` se salvati con formati legacy (es. `documentAnnotation` stringificato, `document_annotation`, `output_document_annotation`, `output_structured`).
+  - I campi vengono riportati alla forma piatta attesa dalla UI tramite `DocumentValidators.normalizeFields()`.
+
+### 10.4 API di Validazione (`/api/documents/validate`)
+- POST: aggiorna `validation_status`, `validation_notes` e i campi validati; in caso di esito positivo rimuove `analysis_error` pregressi.
+- GET: statistiche/aggregati di validazione (per uso futuro).
+
+### 10.5 Schema Database (`document_analysis`)
+Campi principali:
+- `doc_type`: tipo documento analizzato.
+- `extracted_fields`: JSONB con i campi estratti (forma piatta attesa dalla UI).
+- `analysis_status`, `analysis_error`: tracking esecuzione OCR.
+- `validation_status`, `validation_notes`, `validated_at/by`: tracking revisione e audit.
+
+Vedi file: `scripts/03_document_analysis_schema.sql`.
+
+### 10.6 Normalizzazione Campi (retro-compatibilità)
+Per analisi storiche salvate con formati diversi, la GET dell’API e il componente UI eseguono una normalizzazione difensiva:
+- Parsing di `documentAnnotation` se stringa JSON.
+- Uso di alternative note: `document_annotation`, `output_document_annotation`, `output_structured`.
+- Uniformazione tramite `DocumentValidators.normalizeFields(docType, fields)` (pulizia, formati date, CF, indirizzi, ecc.).
+
+### 10.7 Comportamento senza Reload
+In `components/supplier-detail-view.tsx` è stato rimosso il `window.location.reload()` dopo la conclusione dell’analisi. Ora:
+- I dati del fornitore vengono ricaricati con una funzione riutilizzabile (`fetchSupplier`) esposta anche per debug su `window.__refreshSupplier`.
+- La dialog resta aperta e l’utente rimane nella tab attuale.
+
+## 11. EVOLUZIONI FUTURE: AVVIO AUTOMATICO ANALISI DURANTE SYNC
+
+Obiettivo: avviare automaticamente l’analisi documentale durante il processo di sincronizzazione, appena un allegato viene scaricato con successo.
+
+### 11.1 Requisiti/Design
+- Mapping `attachment.cert_type` → `doc_type` supportato da `DOCUMENT_TYPES`.
+- Creazione/aggiornamento record `document_analysis` con `analysis_status = 'pending' | 'processing'` al termine del download.
+- Avvio job OCR (sincrono o, preferibilmente, asincrono tramite coda/job scheduler) per non bloccare la sync.
+- Update `supplier_attachments.analysis_status` per riflettere lo stato corrente (`not_analyzed` → `pending` → `processing` → `completed/failed`).
+
+### 11.2 Punti di Integrazione
+- `app/api/suppliers/sync/route.ts` dopo il salvataggio di ogni allegato:
+  1. Determinare `docType` dal `cert_type` se presente e supportato.
+  2. Inserire/aggiornare `document_analysis` (attach unique su `attachment_id`).
+  3. Innescare analisi:
+     - Opzione A (sincrona): chiamata interna al POST `/api/documents/analyze`.
+     - Opzione B (consigliata): pubblicare messaggio in coda (es. `bullmq`/`pg-boss`) e processare in worker.
+
+### 11.3 Considerazioni Operative
+- Rate limiting Mistral OCR e gestione costi: batching e retry.
+- Logging dedicato per analisi automatiche.
+- Notifiche/indicatori UI nel tab Documents durante la sync.
+
+### 11.4 TODO
+- Implementare orchestrazione asincrona dei job OCR.
+- Mappatura robusta `cert_type` → `doc_type` (normalizzazione maiuscole, sinonimi).
+- Estendere API di sync per conteggio/telemetria delle analisi lanciate.

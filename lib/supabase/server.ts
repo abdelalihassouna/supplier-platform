@@ -1,79 +1,26 @@
-import { createServerClient as createSupabaseServerClient } from "@supabase/ssr"
-import { createServerComponentClient } from "@supabase/auth-helpers-nextjs"
-import { cookies } from "next/headers"
-import { cache } from "react"
+// import { createClient } from "@supabase/supabase-js"
 
-// Check if Supabase environment variables are available
-export const isSupabaseConfigured =
-  typeof process.env.NEXT_PUBLIC_SUPABASE_URL === "string" &&
-  process.env.NEXT_PUBLIC_SUPABASE_URL.length > 0 &&
-  typeof process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY === "string" &&
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY.length > 0
+// // Check if Supabase environment variables are available
+// export const isSupabaseConfigured =
+//   typeof process.env.NEXT_PUBLIC_SUPABASE_URL === "string" &&
+//   process.env.NEXT_PUBLIC_SUPABASE_URL.length > 0 &&
+//   typeof process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY === "string" &&
+//   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY.length > 0
 
-// Create a cached version of the Supabase client for Server Components
-export const createClient = cache(() => {
-  const cookieStore = cookies()
+// // Minimal server-side Supabase client (no cookie binding). Suitable for API routes and server utilities.
+// export const createServerClient = () => {
+//   if (!isSupabaseConfigured) {
+//     throw new Error("Supabase environment variables are not set. Please configure NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local")
+//   }
 
-  if (!isSupabaseConfigured) {
-    console.warn("Supabase environment variables are not set. Using dummy client.")
-    return {
-      auth: {
-        getUser: () => Promise.resolve({ data: { user: null }, error: null }),
-        getSession: () => Promise.resolve({ data: { session: null }, error: null }),
-      },
-    }
-  }
-
-  return createServerComponentClient({ cookies: () => cookieStore })
-})
-
-export const createServerClient = () => {
-  const cookieStore = cookies()
-
-  if (!isSupabaseConfigured) {
-    console.warn("Supabase environment variables are not set. Using dummy client.")
-    return {
-      auth: {
-        getUser: () => Promise.resolve({ data: { user: null }, error: null }),
-        getSession: () => Promise.resolve({ data: { session: null }, error: null }),
-      },
-      from: () => ({
-        select: () => ({
-          eq: () => ({
-            single: () => Promise.resolve({ data: null, error: null }),
-          }),
-        }),
-        update: () => ({
-          eq: () => Promise.resolve({ data: null, error: null }),
-        }),
-        insert: () => Promise.resolve({ data: null, error: null }),
-      }),
-    }
-  }
-
-  return createSupabaseServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
-    cookies: {
-      get(name: string) {
-        return cookieStore.get(name)?.value
-      },
-      set(name: string, value: string, options: any) {
-        try {
-          cookieStore.set({ name, value, ...options })
-        } catch (error) {
-          // The `set` method was called from a Server Component.
-          // This can be ignored if you have middleware refreshing
-          // user sessions.
-        }
-      },
-      remove(name: string, options: any) {
-        try {
-          cookieStore.set({ name, value: "", ...options })
-        } catch (error) {
-          // The `delete` method was called from a Server Component.
-          // This can be ignored if you have middleware refreshing
-          // user sessions.
-        }
-      },
-    },
-  })
-}
+//   return createClient(
+//     process.env.NEXT_PUBLIC_SUPABASE_URL as string,
+//     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string,
+//     {
+//       auth: {
+//         persistSession: false,
+//         autoRefreshToken: false,
+//       },
+//     },
+//   )
+// }

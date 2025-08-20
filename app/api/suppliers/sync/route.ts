@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { JaggaerAPIClient, JaggaerAttachmentClient } from "@/lib/jaggaer-client"
+import { DocumentTypeDetector, DOCUMENT_TYPES } from "@/lib/document-schemas"
+import PgBoss from "pg-boss"
 
 // POST /api/suppliers/sync - Trigger supplier synchronization
 export async function POST(request: NextRequest) {
@@ -82,6 +84,22 @@ export async function POST(request: NextRequest) {
       const api = new JaggaerAPIClient({ baseUrl, clientId, clientSecret })
       const attachmentClient = new JaggaerAttachmentClient({ baseUrl, clientId, clientSecret })
 
+      // Option B: initialize queue (pg-boss) if enabled
+      const useQueue = process.env.USE_QUEUE_FOR_ANALYSIS === 'true'
+      let boss: PgBoss | null = null
+      if (useQueue) {
+        try {
+          const dbUrl = process.env.DATABASE_URL ||
+            `postgres://${encodeURIComponent(process.env.POSTGRES_USER || 'postgres')}:${encodeURIComponent(process.env.POSTGRES_PASSWORD || '')}` +
+            `@${process.env.POSTGRES_HOST || 'localhost'}:${process.env.POSTGRES_PORT || '5432'}/${process.env.POSTGRES_DATABASE || 'db_vai'}`
+          boss = new PgBoss({ connectionString: dbUrl })
+          await boss.start()
+        } catch (e) {
+          console.warn('Failed to start pg-boss, falling back to no-queue mode:', e)
+          boss = null
+        }
+      }
+
       // Ensure storage table for deBasic answers exists
       await query(
         `CREATE TABLE IF NOT EXISTS supplier_debasic_answers (
@@ -112,6 +130,29 @@ export async function POST(request: NextRequest) {
            updated_at TIMESTAMPTZ DEFAULT NOW(),
            UNIQUE(supplier_id, file_id, secure_token)
          )`,
+      )
+
+      // Ensure analysis tracking columns exist on supplier_attachments
+      await query(
+        `DO $$
+         BEGIN
+           IF NOT EXISTS (
+             SELECT 1 FROM information_schema.columns 
+             WHERE table_name = 'supplier_attachments' AND column_name = 'analysis_status'
+           ) THEN
+             ALTER TABLE supplier_attachments 
+               ADD COLUMN analysis_status TEXT DEFAULT 'not_analyzed',
+               ADD COLUMN analysis_requested_at TIMESTAMPTZ;
+             BEGIN
+               ALTER TABLE supplier_attachments
+                 ADD CONSTRAINT chk_supplier_attachments_analysis_status
+                 CHECK (analysis_status IN ('not_analyzed','pending','processing','completed','failed'));
+             EXCEPTION WHEN duplicate_object THEN
+               -- constraint already exists
+               NULL;
+             END;
+           END IF;
+         END $$;`
       )
       const profiles = await api.getAllCompanyProfiles({
         components: selectedComponents.length ? selectedComponents : undefined,
@@ -437,6 +478,71 @@ export async function POST(request: NextRequest) {
 
                   console.log(`Downloaded attachment: ${filename} (${blob.size} bytes) for supplier ${supplierData.bravo_id}`)
 
+                  // --- Auto-analysis kickoff (pending + optional trigger) ---
+                  try {
+                    // 1) Detect doc type from filename and cert.type
+                    const detected = DocumentTypeDetector.detectType(
+                      filename || cert.values?.filename || '',
+                      cert.type
+                    )
+
+                    // 2) Mark attachment analysis status as pending
+                    await query(
+                      `UPDATE supplier_attachments
+                       SET analysis_status = 'pending', analysis_requested_at = NOW(), updated_at = NOW()
+                       WHERE id = $1`,
+                      [attachmentId]
+                    )
+
+                    // 3) Upsert document_analysis with pending status if we have/guess a type
+                    if (detected && DOCUMENT_TYPES.includes(detected)) {
+                      await query(
+                        `INSERT INTO document_analysis (supplier_id, attachment_id, doc_type, analysis_status)
+                         VALUES ($1, $2, $3, 'pending')
+                         ON CONFLICT (attachment_id) DO UPDATE SET
+                           doc_type = EXCLUDED.doc_type,
+                           analysis_status = 'pending',
+                           updated_at = NOW()`,
+                        [supplierId, attachmentId, detected]
+                      )
+
+                      // 4) Option A: trigger synchronous analysis via internal API (feature-flagged)
+                      const shouldAnalyze = process.env.ANALYZE_DURING_SYNC === 'true'
+                      if (!useQueue && shouldAnalyze) {
+                        try {
+                          const origin = request.headers.get('origin') || process.env.APP_BASE_URL || ''
+                          if (!origin) {
+                            console.warn('ANALYZE_DURING_SYNC enabled but no APP_BASE_URL/origin set; skipping immediate analysis trigger')
+                          } else {
+                            const resp = await fetch(`${origin.replace(/\/$/, '')}/api/documents/analyze`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ attachmentId, docType: detected })
+                            })
+                            if (!resp.ok) {
+                              const text = await resp.text().catch(() => '')
+                              console.warn('Immediate analysis trigger failed:', resp.status, text)
+                            }
+                          }
+                        } catch (triggerErr) {
+                          console.warn('Error triggering immediate analysis:', triggerErr)
+                        }
+                      } else if (useQueue && boss) {
+                        try {
+                          await boss.send('document-analysis', { attachmentId, docType: detected }, {
+                            retryLimit: 5,
+                            retryBackoff: true,
+                            retryDelay: 60_000 // 1 minute base delay
+                          })
+                        } catch (sendErr) {
+                          console.warn('Failed to enqueue document-analysis job:', sendErr)
+                        }
+                      }
+                    }
+                  } catch (autoErr) {
+                    console.warn('Auto-analysis kickoff error for attachment', attachmentId, autoErr)
+                  }
+
                 } catch (downloadError) {
                   // Update attachment record with error
                   await query(
@@ -479,6 +585,11 @@ export async function POST(request: NextRequest) {
          WHERE id = $5 RETURNING *`,
         [jaggaerSuppliers.length, suppliersUpdated + suppliersCreated, suppliersFailed, JSON.stringify({ duration_seconds: durationSeconds }), syncLog.id],
       )
+
+      // Gracefully stop queue
+      if (boss) {
+        try { await boss.stop() } catch (_) {}
+      }
 
       return NextResponse.json({ success: true, sync_log: completedSync.rows[0] })
     } catch (syncError) {

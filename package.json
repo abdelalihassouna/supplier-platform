@@ -6,10 +6,12 @@
     "build": "next build",
     "dev": "next dev",
     "lint": "next lint",
-    "start": "next start"
+    "start": "next start",
+    "worker": "node scripts/analysis-worker.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
+    "@mistralai/mistralai": "^1.9.18",
     "@radix-ui/react-accordion": "1.2.2",
     "@radix-ui/react-alert-dialog": "1.1.4",
     "@radix-ui/react-aspect-ratio": "1.1.1",
@@ -51,7 +53,9 @@
     "lucide-react": "^0.454.0",
     "next": "15.2.4",
     "next-themes": "latest",
+    "pg-boss": "^9.0.3",
     "pg": "latest",
+    "dotenv": "^16.4.5",
     "react": "^19",
     "react-day-picker": "9.8.0",
     "react-dom": "^19",
