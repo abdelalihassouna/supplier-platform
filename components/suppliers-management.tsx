@@ -51,6 +51,9 @@ interface Supplier {
   last_sync: string | null
   created_at: string
   updated_at: string
+  total_documents: number
+  verified_documents: number
+  verification_progress: number
   certifications: Array<{
     id: string
     certification_type: string
@@ -133,10 +136,11 @@ export function SuppliersManagement() {
       setSyncInfo(data.sync_info)
     } catch (error) {
       console.error("Error fetching suppliers:", error)
-      setError(error.message)
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      setError(errorMessage)
       toast({
         title: "Error",
-        description: error.message,
+        description: errorMessage,
         variant: "destructive",
       })
     } finally {
@@ -173,10 +177,11 @@ export function SuppliersManagement() {
       }
     } catch (error) {
       console.error("Error syncing suppliers:", error)
-      setError(error.message)
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      setError(errorMessage)
       toast({
         title: "Sync Failed",
-        description: error.message,
+        description: errorMessage,
         variant: "destructive",
       })
     } finally {
@@ -224,12 +229,10 @@ export function SuppliersManagement() {
   }
 
   const getVerificationProgress = (supplier: Supplier) => {
-    const totalCerts = 4 // Expected certifications: SOA, ISO, DURC, White List
-    const completedCerts = supplier.certifications?.length || 0
     return {
-      completed: completedCerts,
-      total: totalCerts,
-      percentage: Math.round((completedCerts / totalCerts) * 100),
+      completed: supplier.verified_documents || 0,
+      total: supplier.total_documents || 0,
+      percentage: supplier.verification_progress || 0,
     }
   }
 
@@ -358,7 +361,7 @@ export function SuppliersManagement() {
               >
                 {config.label}
                 <Badge variant="secondary" className="ml-2">
-                  {filterCounts[key] || 0}
+                  {(filterCounts as any)[key] || 0}
                 </Badge>
               </Button>
             ))}

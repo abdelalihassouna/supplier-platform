@@ -35,6 +35,7 @@ import {
   DocumentFields,
   DocumentValidators
 } from "@/lib/document-schemas"
+import { DocumentVerificationResults } from "@/components/document-verification-results"
 
 // Normalize extracted_fields coming from API, handling legacy shapes
 const normalizeExtractedFields = (docType: DocumentType, extracted: any): DocumentFields => {
@@ -336,9 +337,10 @@ export function DocumentAnalysisDialog({
         </DialogHeader>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="analyze">Analyze Document</TabsTrigger>
             <TabsTrigger value="review" disabled={!analysis}>Review & Validate</TabsTrigger>
+            <TabsTrigger value="verify" disabled={!analysis || analysis.analysis_status !== 'completed'}>AI Verification</TabsTrigger>
           </TabsList>
 
           <TabsContent value="analyze" className="space-y-4">
@@ -501,6 +503,22 @@ export function DocumentAnalysisDialog({
                   </CardContent>
                 </Card>
               </>
+            )}
+          </TabsContent>
+
+          <TabsContent value="verify" className="space-y-4">
+            {analysis && analysis.analysis_status === 'completed' && (
+              <DocumentVerificationResults
+                analysisId={analysis.id}
+                docType={analysis.doc_type}
+                onVerificationStart={() => {
+                  // Optional: Show loading state
+                }}
+                onVerificationComplete={(result) => {
+                  // Stay on verification tab after completion
+                  // onAnalysisComplete?.() - Removed to prevent dialog refresh
+                }}
+              />
             )}
           </TabsContent>
         </Tabs>

@@ -53,6 +53,7 @@
     "lucide-react": "^0.454.0",
     "next": "15.2.4",
     "next-themes": "latest",
+    "openai": "^4.67.3",
     "pg-boss": "^9.0.3",
     "pg": "latest",
     "dotenv": "^16.4.5",

@@ -168,6 +168,62 @@ docker-compose down
 - `POST /api/settings/mistral` - Configure Mistral OCR settings
 - `GET /api/connections/test-jaggaer` - Test Jaggaer connectivity
 
+## 🧠 AI Verification & Supplier Progress
+
+### Overview
+This platform includes AI-powered verification of DURC documents and integrates verification progress directly into the suppliers table.
+
+- **AI Model**: OpenAI GPT-4o-mini (low temperature for consistent parsing)
+- **Scope**: DURC verification comparing OCR fields vs Jaggaer data
+- **Supplier Progress**: Computed from completed document analyses and stored verifications
+
+### Key Endpoints
+- `POST /api/documents/verify` — Start AI verification for a completed `document_analysis`.
+  - Body: `{ "analysisId": "uuid", "forceRerun": boolean }`
+  - `forceRerun: true` deletes existing verification and re-runs it
+- `GET /api/documents/verify?analysisId=uuid` — Fetch existing verification results
+- `GET /api/suppliers` — Returns supplier rows enriched with verification progress fields
+
+### Environment Variables
+Add to `.env.local` for AI verification:
+```env
+# OpenAI for AI verification
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4o-mini
+```
+
+Mistral OCR and Jaggaer credentials remain as in the sections above.
+
+### Supplier API Response (verification progress)
+`GET /api/suppliers` includes:
+- `total_documents` — Number of completed analyses per supplier
+- `verified_documents` — Number of analyses that have a verification record
+- `verification_progress` — Percentage = verified_documents / total_documents * 100 (rounded)
+
+These fields are computed server-side in `app/api/suppliers/route.ts` by joining `document_analysis` and `document_verification`.
+
+### Frontend Behavior
+- Suppliers table displays progress as “X/Y verified” with a percentage and colored indicators.
+  - See `components/suppliers-management.tsx`.
+- Verification results UI hides Jaggaer API values for DURC Status and Expiry Date when not applicable, showing OCR data only.
+  - See `components/document-verification-results.tsx`.
+- The verification dialog preserves the active tab after completion (no auto-switch back to Review & Validate).
+  - See `components/document-analysis-dialog.tsx`.
+- The verification action supports a refresh button that calls `POST /api/documents/verify` with `{ forceRerun: true }` and shows a spinner until completion.
+  - See `app/api/documents/verify/route.ts` and `components/document-verification-results.tsx`.
+
+### Verified Fields (DURC)
+- `denominazione_ragione_sociale` — fuzzy match (≈85%)
+- `codice_fiscale` — exact match (100%)
+- `sede_legale` — fuzzy match (≈80%)
+- `risultato` — must be “RISULTA REGOLARE” (or “REGOLARE”)
+- `scadenza_validita` — valid date, not expired
+
+### More Documentation
+- `DOCUMENT_ANALYSIS_README.md` — Mistral OCR document analysis
+- `DURC_VERIFICATION_README.md` — Detailed AI verification workflow and schema
+- `VERIFICATION_SETUP.md` — Quick setup for AI verification (OpenAI)
+
 ## 🔧 Configuration
 
 ### User Settings

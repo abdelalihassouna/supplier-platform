@@ -48,7 +48,28 @@ export async function GET(request: NextRequest) {
       dataParams.push(limit, startIndex)
 
       const dataRes = await query<any>(
-        `SELECT * FROM suppliers ${whereSql} ORDER BY company_name ASC, id DESC LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+        `SELECT s.*, 
+                COALESCE(v.total_documents, 0) as total_documents,
+                COALESCE(v.verified_documents, 0) as verified_documents,
+                COALESCE(v.verification_progress, 0) as verification_progress
+         FROM suppliers s
+         LEFT JOIN (
+           SELECT 
+             da.supplier_id,
+             COUNT(da.id) as total_documents,
+             COUNT(dv.id) as verified_documents,
+             CASE 
+               WHEN COUNT(da.id) = 0 THEN 0
+               ELSE ROUND((COUNT(dv.id)::decimal / COUNT(da.id)) * 100)
+             END as verification_progress
+           FROM document_analysis da
+           LEFT JOIN document_verification dv ON da.id = dv.analysis_id
+           WHERE da.analysis_status = 'completed'
+           GROUP BY da.supplier_id
+         ) v ON s.id = v.supplier_id
+         ${whereSql} 
+         ORDER BY company_name ASC, id DESC 
+         LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
         dataParams,
       )
 
