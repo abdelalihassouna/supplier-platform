@@ -141,27 +141,56 @@ export class MistralDocumentClient {
       ? { type: "image_url" as const, imageUrl: documentUrl }
       : { type: "document_url" as const, documentUrl: documentUrl };
     
-    // Use the official SDK to process OCR requests
-    const resp = await client.ocr.process({
-    model: 'mistral-ocr-latest',
-    pages,
-    document,
-    // Pass schema for annotation format if provided
-    documentAnnotationFormat: schema
-    ? {
-      type: 'json_schema',
-      jsonSchema: {
-        name: 'DocumentFields',
-        schemaDefinition: schema as any,
-      },
-    }
-    : { type: 'text' },
-    includeImageBase64: false,
-    } as any);
+    // Retry configuration for API errors
+    const maxRetries = 3;
+    const baseDelay = 2000; // 2 seconds
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // Use the official SDK to process OCR requests
+        const resp = await client.ocr.process({
+          model: 'mistral-ocr-latest',
+          pages,
+          document,
+          // Pass schema for annotation format if provided
+          documentAnnotationFormat: schema
+          ? {
+            type: 'json_schema',
+            jsonSchema: {
+              name: 'DocumentFields',
+              schemaDefinition: schema as any,
+            },
+          }
+          : { type: 'text' },
+          includeImageBase64: false,
+        } as any);
 
-    // SDK returns a typed object; return as a plain object to satisfy current types
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return resp as unknown as MistralOCRResponse;
+        // SDK returns a typed object; return as a plain object to satisfy current types
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return resp as unknown as MistralOCRResponse;
+        
+      } catch (error: any) {
+        const isRetryableError = (
+          error?.statusCode === 503 || 
+          error?.status === 503 ||
+          (error?.message && error.message.includes('Service unavailable')) ||
+          (error?.message && error.message.includes('503'))
+        );
+        
+        if (isRetryableError && attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
+          console.warn(`Mistral API attempt ${attempt} failed with 503 error, retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        
+        // If not retryable or max retries reached, throw the error
+        throw error;
+      }
+    }
+    
+    // This should never be reached, but TypeScript requires it
+    throw new Error('Max retries exceeded');
   }
 
   private extractAnnotationDict(response: MistralOCRResponse, docType: DocumentType): Record<string, any> {

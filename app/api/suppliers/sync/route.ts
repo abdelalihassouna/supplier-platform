@@ -401,12 +401,39 @@ export async function POST(request: NextRequest) {
           try {
             const certifications = api.extractCertifications(profiles[i])
             
+            // Filter for only required document types
+            const allowedQuestionCodes = [
+              'Q1_CCIAA_ALLEGATO',
+              'Q0_DURC_ALLEGATO',
+              'Q1_ALLEGATO_SOA'
+            ]
+            
             for (const cert of certifications) {
               const { file_id, secure_token, filename } = cert.values
               
               // Skip if no attachment data
               if (!secure_token && !file_id) continue
               if (!filename) continue
+              
+              // Filter by question code - only download specific document types
+              const questionCode = cert.question_code
+              let shouldDownload = false
+              
+              // Check exact matches
+              if (allowedQuestionCodes.includes(questionCode)) {
+                shouldDownload = true
+              }
+              // Check for ISO pattern (Q1_ALLEGATO_ISO_*)
+              else if (questionCode && questionCode.startsWith('Q1_ALLEGATO_ISO_')) {
+                shouldDownload = true
+              }
+              
+              if (!shouldDownload) {
+                console.log(`Skipping attachment ${filename} with question code: ${questionCode}`);
+                continue
+              }
+              
+              console.log(`Processing allowed attachment: ${filename} (${questionCode})`)
 
               try {
                 // Check if attachment already exists

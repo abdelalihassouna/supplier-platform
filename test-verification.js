@@ -1,14 +1,16 @@
 // Simple test script to verify the API endpoints
 const testVerification = async () => {
   try {
-    // Test POST request with a sample analysis ID
+    // Test POST request with a sample analysis ID and document type
     const response = await fetch('http://localhost:3000/api/documents/verify', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        analysisId: '25d8e033-ed0a-4d62-8517-73aa850682c8'
+        analysisId: '25d8e033-ed0a-4d62-8517-73aa850682c8',
+        docType: 'SOA',
+        forceRerun: true
       })
     });
 
@@ -16,7 +18,7 @@ const testVerification = async () => {
     console.log('POST Response:', response.status, result);
 
     // Test GET request
-    const getResponse = await fetch('http://localhost:3000/api/documents/verify?analysisId=25d8e033-ed0a-4d62-8517-73aa850682c8');
+    const getResponse = await fetch('http://localhost:3000/api/documents/verify?analysisId=25d8e033-ed0a-4d62-8517-73aa850682c8&docType=SOA&forceRerun=true');
     const getResult = await getResponse.json();
     console.log('GET Response:', getResponse.status, getResult);
 

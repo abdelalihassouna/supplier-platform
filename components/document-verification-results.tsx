@@ -54,6 +54,7 @@ type AIVerdict = {
   activity_status?: boolean
   certificate_valid?: boolean
   rea_valid?: boolean
+  soa_categories_match?: boolean
 }
 
 type DocumentType = 'DURC' | 'VISURA' | 'SOA' | 'ISO' | 'CCIAA'
@@ -207,7 +208,6 @@ export function DocumentVerificationResults({
       },
       ISO: {
         'denominazione_ragione_sociale': 'Company Name',
-        'codice_fiscale': 'Fiscal Code',
         'numero_certificazione': 'Certificate Number',
         'standard': 'ISO Standard',
         'ente_certificatore': 'Certification Body',
@@ -229,7 +229,7 @@ export function DocumentVerificationResults({
     const specificFields: Record<DocumentType, string[]> = {
       DURC: ['risultato', 'scadenza_validita'],
       VISURA: ['stato_attivita', 'attivita_esercitata', 'capitale_sociale_sottoscritto', 'data_estratto'],
-      SOA: ['categorie', 'ente_attestazione', 'data_emissione', 'data_scadenza_validita_triennale', 'data_scadenza_validita_quinquennale'],
+      SOA: ['ente_attestazione', 'data_emissione', 'data_scadenza_validita_triennale', 'data_scadenza_validita_quinquennale'],
       ISO: ['numero_certificazione', 'standard', 'ente_certificatore', 'data_emissione', 'data_scadenza'],
       CCIAA: ['rea', 'data_iscrizione']
     }
@@ -269,6 +269,24 @@ export function DocumentVerificationResults({
           </>
         )
       case 'SOA':
+        return (
+          <>
+            {verdict.soa_categories_match !== undefined && (
+              <div className="p-3 rounded border bg-background/50">
+                <div className="text-sm text-muted-foreground mb-1">SOA Categories Match</div>
+                <Badge className={cn('text-xs', verdict.soa_categories_match ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')} variant="outline">
+                  {verdict.soa_categories_match ? 'Yes' : 'No'}
+                </Badge>
+              </div>
+            )}
+            <div className="p-3 rounded border bg-background/50">
+              <div className="text-sm text-muted-foreground mb-1">Certificate Valid</div>
+              <Badge className={cn('text-xs', verdict.certificate_valid ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')} variant="outline">
+                {verdict.certificate_valid ? 'Valid' : 'Expired/Invalid'}
+              </Badge>
+            </div>
+          </>
+        )
       case 'ISO':
         return (
           <div className="p-3 rounded border bg-background/50">
@@ -378,6 +396,25 @@ export function DocumentVerificationResults({
     ? JSON.parse(verification.discrepancies || '[]')
     : (verification.discrepancies || []) as string[]
 
+  // Deduplicate fields defensively: prefer non-document-specific over document-specific entries
+  const dedupedComparisons: VerificationField[] = (() => {
+    const map = new Map<string, VerificationField>()
+    for (const f of fieldComparisons as VerificationField[]) {
+      const key = f.field_name
+      const existing = map.get(key)
+      if (!existing) {
+        map.set(key, f)
+      } else {
+        const existingIsDocSpecific = existing.rule_type === 'document_specific'
+        const currentIsDocSpecific = f.rule_type === 'document_specific'
+        if (existingIsDocSpecific && !currentIsDocSpecific) {
+          map.set(key, f)
+        }
+      }
+    }
+    return Array.from(map.values())
+  })()
+
   return (
     <div className="space-y-6">
       {/* Overall Result */}
@@ -449,7 +486,7 @@ export function DocumentVerificationResults({
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {fieldComparisons.map((field, index) => (
+            {dedupedComparisons.map((field, index) => (
               <div 
                 key={index} 
                 className={cn(
@@ -553,12 +590,14 @@ export function DocumentVerificationResults({
                           {verdict.company_match ? 'Yes' : 'No'}
                         </Badge>
                       </div>
-                      <div className="p-3 rounded border bg-background/50">
-                        <div className="text-sm text-muted-foreground mb-1">Fiscal Code Match</div>
-                        <Badge className={cn('text-xs', verdict.fiscal_code_match ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')} variant="outline">
-                          {verdict.fiscal_code_match ? 'Yes' : 'No'}
-                        </Badge>
-                      </div>
+                      {docType !== 'ISO' && (
+                        <div className="p-3 rounded border bg-background/50">
+                          <div className="text-sm text-muted-foreground mb-1">Fiscal Code Match</div>
+                          <Badge className={cn('text-xs', verdict.fiscal_code_match ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')} variant="outline">
+                            {verdict.fiscal_code_match ? 'Yes' : 'No'}
+                          </Badge>
+                        </div>
+                      )}
                       <div className="p-3 rounded border bg-background/50">
                         <div className="text-sm text-muted-foreground mb-1">Address Match</div>
                         <Badge className={cn('text-xs', verdict.address_match ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')} variant="outline">

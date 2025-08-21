@@ -2,6 +2,18 @@ import { query } from '@/lib/db'
 import { JaggaerClient } from '@/lib/jaggaer-client'
 import OpenAI from 'openai'
 
+interface SupplierData {
+  company_name: string
+  fiscal_code: string
+  address: string
+  bravo_id: string
+  capitale_sociale?: string | null
+  soa_categories?: string[] | null
+  iso_certifications?: string[] | null
+  cciaa_numero?: string | null
+  answers?: Record<string, any>
+}
+
 interface VerificationField {
   field_name: string
   ocr_value: string | null
@@ -146,7 +158,8 @@ class SOAVerificationStrategy extends DocumentVerificationStrategy {
   getFieldMappings(): Record<string, string> {
     return {
       denominazione_ragione_sociale: 'company_name',
-      codice_fiscale: 'fiscal_code'
+      codice_fiscale: 'fiscal_code',
+      categorie: 'soa_categories'
     }
   }
 
@@ -154,6 +167,7 @@ class SOAVerificationStrategy extends DocumentVerificationStrategy {
     return [
       { field: 'denominazione_ragione_sociale', rule: 'fuzzy_match', threshold: 80, required: true },
       { field: 'codice_fiscale', rule: 'exact_match', threshold: 100, required: true },
+      { field: 'categorie', rule: 'fuzzy_match', threshold: 90, required: true },
       { field: 'data_scadenza_validita_triennale', rule: 'date_validation', threshold: 100, required: true },
       { field: 'data_scadenza_validita_quinquennale', rule: 'date_validation', threshold: 100, required: false }
     ]
@@ -206,15 +220,13 @@ class SOAVerificationStrategy extends DocumentVerificationStrategy {
 class ISOVerificationStrategy extends DocumentVerificationStrategy {
   getFieldMappings(): Record<string, string> {
     return {
-      denominazione_ragione_sociale: 'company_name',
-      codice_fiscale: 'fiscal_code'
+      denominazione_ragione_sociale: 'company_name'
     }
   }
 
   getVerificationRules() {
     return [
       { field: 'denominazione_ragione_sociale', rule: 'fuzzy_match', threshold: 80, required: true },
-      { field: 'codice_fiscale', rule: 'exact_match', threshold: 100, required: true },
       { field: 'data_scadenza', rule: 'date_validation', threshold: 100, required: true }
     ]
   }
@@ -415,7 +427,12 @@ export class AIVerificationService {
     const fieldLabels: Record<string, string> = {
       denominazione_ragione_sociale: 'Company Name',
       codice_fiscale: 'Fiscal Code',
-      sede_legale: 'Legal Address'
+      partita_iva: 'VAT Number',
+      sede_legale: 'Legal Address',
+      capitale_sociale_sottoscritto: 'Share Capital',
+      categorie: 'SOA Categories',
+      standard: 'ISO Standard',
+      rea: 'REA Number'
     }
 
     const instructions = this.getFieldInstructions(fieldName)
@@ -464,7 +481,16 @@ Return JSON: {"match": boolean, "reason": "brief explanation"}`
       case 'sede_legale':
         return 'For addresses: treat abbreviations as equivalent (S S ROMEA = STS ROMEA, VE = Venezia). Ignore CAP and minor formatting.'
       case 'codice_fiscale':
-        return 'For fiscal codes: must match exactly (11 or 16 digits).'
+      case 'partita_iva':
+        return 'For fiscal codes/VAT numbers: must match exactly (11 or 16 digits).'
+      case 'capitale_sociale_sottoscritto':
+        return 'For share capital: compare numerical values, ignore currency symbols and formatting.'
+      case 'categorie':
+        return 'For SOA categories: check if OCR categories are present in the supplier\'s declared SOA categories.'
+      case 'standard':
+        return 'For ISO standards: check if the OCR standard matches any of the supplier\'s ISO certifications.'
+      case 'rea':
+        return 'For REA numbers: must match exactly the format and number.'
       default:
         return 'Compare values considering common variations and abbreviations.'
     }
@@ -625,21 +651,51 @@ Return JSON: {"match": boolean, "reason": "brief explanation"}`
     return { ...analysis, extracted_fields: extractedFields }
   }
 
-  private async getSupplierData(supplierId: string) {
-    try {
-      const { rows } = await query(
-        `SELECT id, bravo_id, company_name, fiscal_code, vat_number, 
-                address, city, province, country, 
-                email, pec_email, phone
-         FROM suppliers 
-         WHERE id = $1`,
-        [supplierId]
-      )
-      
-      return rows[0] || null
-    } catch (error) {
-      console.error('Error fetching supplier data:', error)
-      return null
+  private async getSupplierData(supplierId: string): Promise<SupplierData> {
+    // Get basic supplier data
+    const { rows: supplierRows } = await query(
+      `SELECT bravo_id, company_name, fiscal_code, address, city, province, postal_code, country
+       FROM suppliers 
+       WHERE id = $1`,
+      [supplierId]
+    )
+
+    if (!supplierRows.length) {
+      throw new Error(`Supplier not found: ${supplierId}`)
+    }
+
+    const supplier = supplierRows[0]
+    
+    // Get additional data from supplier_debasic_answers
+    const { rows: answersRows } = await query(
+      `SELECT answers
+       FROM supplier_debasic_answers 
+       WHERE supplier_id = $1`,
+      [supplierId]
+    )
+
+    let answers: Record<string, any> = {}
+    if (answersRows.length > 0 && answersRows[0].answers) {
+      try {
+        answers = typeof answersRows[0].answers === 'string' 
+          ? JSON.parse(answersRows[0].answers) 
+          : answersRows[0].answers
+      } catch (error) {
+        console.warn('Failed to parse supplier answers:', error)
+      }
+    }
+
+    return {
+      company_name: supplier.company_name,
+      fiscal_code: supplier.fiscal_code,
+      address: `${supplier.address || ''} ${supplier.city || ''} ${supplier.province || ''} ${supplier.postal_code || ''}`.trim(),
+      bravo_id: supplier.bravo_id,
+      // Additional fields from Jaggaer answers
+      capitale_sociale: answers['Q1_CAPITALE_SOCIALE'] || null,
+      soa_categories: answers['NEW_SCELTA SOA'] || null,
+      iso_certifications: answers['Q1_ISO_SA_ALTRE'] || null,
+      cciaa_numero: answers['Q1_CCIAA_NUMERO'] || null,
+      answers: answers
     }
   }
 
@@ -660,6 +716,10 @@ Return JSON: {"match": boolean, "reason": "brief explanation"}`
     const fieldMappings = strategy.getFieldMappings()
     const documentValidations = strategy.validateDocumentSpecificFields(ocrData)
     const comparisons: VerificationField[] = []
+
+    // Build a set of fields that have explicit comparison rules to avoid duplicating
+    // the same field via document-specific validations (e.g., SOA 'categorie').
+    const ruleFields = new Set(rules.map(r => r.field))
 
     for (const rule of rules) {
       const ocrValue = ocrData[rule.field]
@@ -693,20 +753,22 @@ Return JSON: {"match": boolean, "reason": "brief explanation"}`
       })
     }
 
-    // Add document-specific validations
+    // Add document-specific validations for fields that don't already have a rule
     documentValidations.forEach(validation => {
-      comparisons.push({
-        field_name: validation.field,
-        ocr_value: ocrData[validation.field],
-        api_value: null,
-        rule_type: 'document_specific',
-        threshold: 100,
-        is_required: false,
-        expected_values: undefined,
-        match_score: validation.status === 'match' ? 100 : 0,
-        status: validation.status as any,
-        notes: validation.notes
-      })
+      if (validation.field && !ruleFields.has(validation.field)) {
+        comparisons.push({
+          field_name: validation.field,
+          ocr_value: ocrData[validation.field],
+          api_value: null,
+          rule_type: 'document_specific',
+          threshold: 100,
+          is_required: false,
+          expected_values: undefined,
+          match_score: validation.status === 'match' ? 100 : 0,
+          status: validation.status as any,
+          notes: validation.notes
+        })
+      }
     })
 
     return comparisons
@@ -735,15 +797,26 @@ Return JSON: {"match": boolean, "reason": "brief explanation"}`
 
       case 'fuzzy_match':
         if (supplierValue) {
-          const ai = await this.aiFieldMatch(rule.field, String(ocrValue), String(supplierValue))
-          score = ai.match ? 100 : 0
-          status = ai.match ? 'match' : 'mismatch'
-          notes = ai.reason ? `AI: ${ai.reason}` : `AI verdict: ${ai.verdict}`
-          
-          if (!ai.usedAI) {
-            score = this.exactMatch(String(ocrValue), String(supplierValue))
+          // Special handling for array-type fields (SOA categories, ISO certifications)
+          if (rule.field === 'categorie' && supplierValue.includes(',')) {
+            score = this.checkCategoriesMatch(String(ocrValue), supplierValue)
             status = score >= rule.threshold ? 'match' : 'mismatch'
-            notes = 'Fallback: exact match comparison'
+            notes = score >= rule.threshold ? 'Categories found in supplier data' : 'Categories not found in supplier data'
+          } else if (rule.field === 'standard' && supplierValue.includes(',')) {
+            score = this.checkISOStandardMatch(String(ocrValue), supplierValue)
+            status = score >= rule.threshold ? 'match' : 'mismatch'
+            notes = score >= rule.threshold ? 'ISO standard found in certifications' : 'ISO standard not found in certifications'
+          } else {
+            const ai = await this.aiFieldMatch(rule.field, String(ocrValue), String(supplierValue))
+            score = ai.match ? 100 : 0
+            status = ai.match ? 'match' : 'mismatch'
+            notes = ai.reason ? `AI: ${ai.reason}` : `AI verdict: ${ai.verdict}`
+            
+            if (!ai.usedAI) {
+              score = this.exactMatch(String(ocrValue), String(supplierValue))
+              status = score >= rule.threshold ? 'match' : 'mismatch'
+              notes = 'Fallback: exact match comparison'
+            }
           }
         } else {
           status = 'missing'
@@ -761,17 +834,10 @@ Return JSON: {"match": boolean, "reason": "brief explanation"}`
         break
 
       case 'date_validation':
-        score = this.dateValidation(ocrValue)
-        if (score === 100) {
-          status = 'match'
-          notes = 'Valid and not expired'
-        } else if (score === 50) {
-          status = 'mismatch'
-          notes = 'Document has expired'
-        } else {
-          status = 'invalid'
-          notes = 'Invalid date format'
-        }
+        const dateResult = this.validateDate(ocrValue, rule.field)
+        score = dateResult.score
+        status = dateResult.status
+        notes = dateResult.notes
         break
 
       default:
@@ -784,8 +850,8 @@ Return JSON: {"match": boolean, "reason": "brief explanation"}`
 
   private getExpectedValues(fieldName: string): string[] | null {
     const expectedValuesMap: Record<string, string[]> = {
-      risultato: ['RISULTA REGOLARE'],
-      stato_attivita: ['ATTIVA', 'ATTIVO']
+      risultato: ['RISULTA REGOLARE', 'REGOLARE'],
+      stato_attivita: ['ATTIVA', 'ATTIVO', 'ACTIVE']
     }
     return expectedValuesMap[fieldName] || null
   }
@@ -800,9 +866,21 @@ Return JSON: {"match": boolean, "reason": "brief explanation"}`
       case 'fiscal_code':
         return supplierData?.fiscal_code || null
       case 'vat_number':
-        return supplierData?.vat_number || null
+        return supplierData?.fiscal_code || null // VAT and fiscal code are same in Italy
       case 'address_combined':
         return this.buildAddress(supplierData) || null
+      case 'capitale_sociale':
+        return supplierData?.capitale_sociale || null
+      case 'soa_categories':
+        return Array.isArray(supplierData?.soa_categories) 
+          ? supplierData.soa_categories.join(', ') 
+          : supplierData?.soa_categories || null
+      case 'iso_certifications':
+        return Array.isArray(supplierData?.iso_certifications) 
+          ? supplierData.iso_certifications.join(', ') 
+          : supplierData?.iso_certifications || null
+      case 'cciaa_numero':
+        return supplierData?.cciaa_numero || null
       default:
         return supplierData?.[supplierField] || null
     }
@@ -831,36 +909,46 @@ Return JSON: {"match": boolean, "reason": "brief explanation"}`
     return found ? 100 : 0
   }
 
-  private dateValidation(value: string | null): number {
-    if (!value) return 0
-    
-    // Check if it's a valid date format (DD/MM/YYYY)
-    const dateRegex = /^\d{2}\/\d{2}\/\d{4}$/
-    if (!dateRegex.test(value)) return 0
-    
-    try {
-      const [day, month, year] = value.split('/').map(Number)
-      const date = new Date(year, month - 1, day)
-      const now = new Date()
-      
-      // Check if date is valid
-      if (date.getFullYear() === year && 
-          date.getMonth() === month - 1 && 
-          date.getDate() === day &&
-          year >= 2015 && year <= 2035) {
-        
-        // For DURC validation: check if date is in the future (not expired)
-        if (date > now) {
-          return 100 // Valid and not expired
-        } else {
-          return 50  // Valid format but expired
-        }
-      }
-    } catch {
-      return 0
+  private validateDate(value: string | null, fieldName: string): { score: number; status: 'match' | 'mismatch' | 'invalid'; notes: string } {
+    if (!value) {
+      return { score: 0, status: 'invalid', notes: 'Date value is missing' }
     }
     
-    return 0
+    // Parse various date formats
+    let date: Date | null = null
+    
+    // Try DD/MM/YYYY format
+    const ddmmyyyyRegex = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
+    const ddmmyyyyMatch = value.match(ddmmyyyyRegex)
+    if (ddmmyyyyMatch) {
+      const [, day, month, year] = ddmmyyyyMatch
+      date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day))
+    }
+    
+    // Try D/M/YYYY format
+    const dmyyyyRegex = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
+    if (!date && dmyyyyRegex.test(value)) {
+      const [day, month, year] = value.split('/').map(Number)
+      date = new Date(year, month - 1, day)
+    }
+    
+    if (!date || isNaN(date.getTime())) {
+      return { score: 0, status: 'invalid', notes: 'Invalid date format' }
+    }
+    
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    
+    if (date < today) {
+      return { score: 0, status: 'mismatch', notes: `Document expired on ${value}` }
+    }
+    
+    return { score: 100, status: 'match', notes: `Valid until ${value}` }
+  }
+
+  private dateValidation(value: string | null): number {
+    const result = this.validateDate(value, '')
+    return result.score
   }
 
   private cleanString(str: string): string {
@@ -869,6 +957,37 @@ Return JSON: {"match": boolean, "reason": "brief explanation"}`
       .toLowerCase()
       .replace(/[^\w\s]/g, '')
       .replace(/\s+/g, ' ')
+  }
+
+  private checkCategoriesMatch(ocrCategories: string, supplierCategories: string): number {
+    if (!ocrCategories || !supplierCategories) return 0
+    
+    const ocrCats = ocrCategories.split(/[,;]/).map(cat => cat.trim().toUpperCase())
+    const supplierCats = supplierCategories.split(/[,;]/).map(cat => cat.trim().toUpperCase())
+    
+    const matchedCategories = ocrCats.filter(ocrCat => 
+      supplierCats.some(supplierCat => 
+        supplierCat.includes(ocrCat) || ocrCat.includes(supplierCat)
+      )
+    )
+    
+    return matchedCategories.length > 0 ? 100 : 0
+  }
+
+  private checkISOStandardMatch(ocrStandard: string, supplierCertifications: string): number {
+    if (!ocrStandard || !supplierCertifications) return 0
+    
+    const cleanOcrStandard = ocrStandard.replace(/[^\w\d]/g, '').toUpperCase()
+    const cleanSupplierCerts = supplierCertifications.toUpperCase()
+    
+    // Check for ISO standard patterns (e.g., ISO 9001, ISO 14001, etc.)
+    const isoMatch = cleanOcrStandard.match(/ISO\s*(\d+)/)
+    if (isoMatch) {
+      const isoNumber = isoMatch[1]
+      return cleanSupplierCerts.includes(`ISO ${isoNumber}`) || cleanSupplierCerts.includes(`ISO${isoNumber}`) ? 100 : 0
+    }
+    
+    return cleanSupplierCerts.includes(cleanOcrStandard) ? 100 : 0
   }
 
   private async generateAIAnalysisWithStrategy(
@@ -972,58 +1091,37 @@ FINAL OUTPUT FORMAT:
     const mismatches = comparisons.filter(c => c.status === 'mismatch' || c.status === 'missing')
     const matches = comparisons.filter(c => c.status === 'match')
     
-    let analysis = `DURC Document Verification Analysis (Fallback):\n\n`
+    let analysis = `Document Verification Analysis (Fallback):\n\n`
     
-    analysis += `✅ Matching Fields (${matches.length}):\n`
-    matches.forEach(match => {
-      analysis += `- ${match.field_name}: ${match.match_score.toFixed(1)}% match\n`
-    })
+    if (matches.length > 0) {
+      analysis += `✓ Matched Fields (${matches.length}):\n`
+      matches.forEach(match => {
+        analysis += `  - ${match.field_name}: ${match.match_score}% match\n`
+      })
+      analysis += '\n'
+    }
     
     if (mismatches.length > 0) {
-      analysis += `\n❌ Issues Found (${mismatches.length}):\n`
+      analysis += `✗ Issues Found (${mismatches.length}):\n`
       mismatches.forEach(mismatch => {
-        analysis += `- ${mismatch.field_name}: ${mismatch.status.toUpperCase()}\n`
-        analysis += `  OCR: "${mismatch.ocr_value || 'N/A'}"\n`
-        analysis += `  Database: "${mismatch.api_value || 'N/A'}"\n`
-        if (mismatch.notes) analysis += `  Note: ${mismatch.notes}\n`
-      })
-    }
-    
-    // Special DURC status check
-    const statusField = comparisons.find(c => c.field_name === 'risultato')
-    if (statusField) {
-      analysis += `\n📋 DURC Status Verification:\n`
-      if (statusField.status === 'match') {
-        analysis += `✅ Status is valid: "${statusField.ocr_value}"\n`
-      } else {
-        analysis += `❌ Status issue: "${statusField.ocr_value}" (Expected: "RISULTA REGOLARE")\n`
-      }
-    }
-    
-    // Expiry date check
-    const expiryField = comparisons.find(c => c.field_name === 'scadenza_validita')
-    if (expiryField && expiryField.ocr_value) {
-      analysis += `\n📅 Expiry Date: ${expiryField.ocr_value}\n`
-      try {
-        const [day, month, year] = expiryField.ocr_value.split('/').map(Number)
-        const expiryDate = new Date(year, month - 1, day)
-        const today = new Date()
-        const daysUntilExpiry = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-        
-        if (daysUntilExpiry < 0) {
-          analysis += `❌ DURC has expired ${Math.abs(daysUntilExpiry)} days ago\n`
-        } else if (daysUntilExpiry <= 30) {
-          analysis += `⚠️ DURC expires in ${daysUntilExpiry} days\n`
-        } else {
-          analysis += `✅ DURC is valid for ${daysUntilExpiry} days\n`
+        analysis += `  - ${mismatch.field_name}: ${mismatch.status} (${mismatch.match_score}%)\n`
+        if (mismatch.notes) {
+          analysis += `    Note: ${mismatch.notes}\n`
         }
-      } catch {
-        analysis += `❌ Invalid date format\n`
-      }
+      })
+      analysis += '\n'
     }
+    
+    const overallScore = comparisons.reduce((sum, comp) => sum + comp.match_score, 0) / comparisons.length
+    const riskLevel = overallScore >= 80 ? 'Low' : overallScore >= 60 ? 'Medium' : 'High'
+    
+    analysis += `Overall Match Score: ${overallScore.toFixed(1)}%\n`
+    analysis += `Compliance Risk: ${riskLevel}\n`
     
     return analysis
   }
+
+
 
   private calculateOverallResult(comparisons: VerificationField[]): {
     overall_result: 'match' | 'mismatch' | 'partial_match' | 'no_data'
@@ -1082,9 +1180,28 @@ FINAL OUTPUT FORMAT:
         result.confidence_score,
         JSON.stringify(result.field_comparisons),
         JSON.stringify(result.discrepancies),
-        result.ai_analysis,
+        JSON.stringify(result.ai_analysis),
         result.processing_time
       ]
     )
+  }
+
+  private async generateAIAnalysisWithStrategyAndStore(
+    ocrData: any,
+    supplierData: any,
+    fieldComparisons: VerificationField[],
+    strategy: DocumentVerificationStrategy,
+    analysisId: string
+  ): Promise<string> {
+    const aiAnalysis = await this.generateAIAnalysisWithStrategy(ocrData, supplierData, fieldComparisons, strategy)
+    const overallResult = this.calculateOverallResult(fieldComparisons)
+    await this.storeVerificationResult(analysisId, { ...overallResult, ai_analysis: aiAnalysis })
+    return JSON.stringify({
+      ai_analysis: aiAnalysis,
+      overall_result: overallResult.overall_result,
+      confidence_score: overallResult.confidence_score,
+      field_comparisons: overallResult.field_comparisons,
+      discrepancies: overallResult.discrepancies
+    })
   }
 }

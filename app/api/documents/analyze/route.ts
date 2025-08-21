@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { MistralDocumentClient } from '@/lib/mistral-client';
 import { DocumentType, DocumentTypeDetector, DOCUMENT_TYPES, DocumentValidators } from '@/lib/document-schemas';
 import { query } from '@/lib/db';
+import { AIVerificationService } from '@/lib/ai-verification-service';
 
 export async function POST(request: NextRequest) {
   try {
@@ -194,6 +195,21 @@ export async function POST(request: NextRequest) {
         `UPDATE supplier_attachments SET analysis_status = 'completed' WHERE id = $1`,
         [attachmentId]
       );
+
+      // Trigger automatic AI verification for supported document types
+      const supportedVerificationTypes: DocumentType[] = ['DURC', 'VISURA', 'SOA', 'ISO', 'CCIAA'];
+      if (supportedVerificationTypes.includes(detectedDocType)) {
+        try {
+          console.log(`Triggering automatic AI verification for ${detectedDocType} document (analysis ID: ${analysisId})`);
+          const aiService = new AIVerificationService();
+          await aiService.verifyDocument(analysisId, detectedDocType);
+          console.log(`AI verification completed successfully for analysis ID: ${analysisId}`);
+        } catch (verificationError) {
+          console.error(`AI verification failed for analysis ID ${analysisId}:`, verificationError);
+          // Don't fail the entire request if AI verification fails
+          // The OCR analysis was successful, so we still return success
+        }
+      }
 
       return NextResponse.json({
         success: true,
