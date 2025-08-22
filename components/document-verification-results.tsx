@@ -387,14 +387,14 @@ export function DocumentVerificationResults({
   }
 
   // Handle field_comparisons - it might be already parsed or a string
-  const fieldComparisons = typeof verification.field_comparisons === 'string' 
-    ? JSON.parse(verification.field_comparisons || '[]') 
-    : (verification.field_comparisons || []) as VerificationField[]
+  const fieldComparisons: VerificationField[] = typeof verification.field_comparisons === 'string' 
+    ? (JSON.parse(verification.field_comparisons || '[]') as VerificationField[])
+    : ((verification.field_comparisons || []) as VerificationField[])
   
   // Handle discrepancies - it might be already parsed or a string  
-  const discrepancies = typeof verification.discrepancies === 'string'
-    ? JSON.parse(verification.discrepancies || '[]')
-    : (verification.discrepancies || []) as string[]
+  const discrepancies: string[] = typeof verification.discrepancies === 'string'
+    ? (JSON.parse(verification.discrepancies || '[]') as string[])
+    : ((verification.discrepancies || []) as string[])
 
   // Deduplicate fields defensively: prefer non-document-specific over document-specific entries
   const dedupedComparisons: VerificationField[] = (() => {

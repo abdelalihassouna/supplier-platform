@@ -35,6 +35,10 @@ import {
 import { cn } from "@/lib/utils"
 import Link from "next/link"
 import { DocumentAnalysisDialog } from "@/components/document-analysis-dialog"
+import { SupplierProfileValidation } from "@/components/supplier-profile-validation"
+import { LanguageSwitcher } from "@/components/language-switcher"
+import { useI18n } from "@/hooks/use-i18n"
+import { uiTranslations } from "@/lib/i18n/translations"
 
 interface SupplierDetailViewProps {
   supplierId: string
@@ -100,6 +104,7 @@ export function SupplierDetailView({ supplierId }: SupplierDetailViewProps) {
   const [error, setError] = useState<string | null>(null)
   const [analysisDialogOpen, setAnalysisDialogOpen] = useState(false)
   const [selectedAttachment, setSelectedAttachment] = useState<any>(null)
+  const { t, formatDate, formatDateTime } = useI18n()
 
   // Reusable loader so we can refresh without reloading the page
   useEffect(() => {
@@ -167,23 +172,6 @@ export function SupplierDetailView({ supplierId }: SupplierDetailViewProps) {
     }
   }
 
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString("it-IT", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    })
-  }
-
-  const formatDateTime = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString("it-IT", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    })
-  }
 
   if (loading) {
     return <div className="p-4 text-sm text-muted-foreground">Loading supplier...</div>
@@ -224,6 +212,7 @@ export function SupplierDetailView({ supplierId }: SupplierDetailViewProps) {
           </div>
         </div>
         <div className="flex items-center space-x-2">
+          <LanguageSwitcher />
           <Button variant="outline">
             <MessageSquare className="w-4 h-4 mr-2" />
             Contact
@@ -290,11 +279,11 @@ export function SupplierDetailView({ supplierId }: SupplierDetailViewProps) {
       {/* Main Content Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="grid w-full grid-cols-5">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="profile">Profile</TabsTrigger>
-          <TabsTrigger value="documents">Documents</TabsTrigger>
-          <TabsTrigger value="scorecard">Scorecard</TabsTrigger>
-          <TabsTrigger value="timeline">Timeline</TabsTrigger>
+          <TabsTrigger value="overview">{t(uiTranslations.overview)}</TabsTrigger>
+          <TabsTrigger value="profile">{t(uiTranslations.profile)}</TabsTrigger>
+          <TabsTrigger value="documents">{t(uiTranslations.documents)}</TabsTrigger>
+          <TabsTrigger value="scorecard">{t(uiTranslations.scorecard)}</TabsTrigger>
+          <TabsTrigger value="timeline">{t(uiTranslations.timeline)}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6">
@@ -304,35 +293,28 @@ export function SupplierDetailView({ supplierId }: SupplierDetailViewProps) {
               <CardHeader>
                 <CardTitle className="flex items-center">
                   <Building2 className="w-5 h-5 mr-2" />
-                  Company Information
+                  {t(uiTranslations.companyInformation)}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <p className="text-sm text-muted-foreground">VAT Number</p>
-                    <p className="font-medium">{supplier.vatNumber}</p>
+                    <p className="font-medium">{supplier.vatNumber || '-'}</p>
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Fiscal Code</p>
-                    <p className="font-medium">{supplier.fiscalCode}</p>
+                    <p className="font-medium">{supplier.fiscalCode || '-'}</p>
                   </div>
                 </div>
                 <Separator />
-                <div>
-                  <p className="text-sm text-muted-foreground">Address</p>
-                  <p className="font-medium">
-                    {supplier.address.street}
-                    <br />
-                    {supplier.address.postalCode} {supplier.address.city} ({supplier.address.province})
-                    <br />
-                    {supplier.address.country}
-                  </p>
-                </div>
-                <Separator />
-                <div>
-                  <p className="text-sm text-muted-foreground">Registration Date</p>
-                  <p className="font-medium">{supplier.registrationDate ? formatDate(supplier.registrationDate) : "-"}</p>
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-muted-foreground">Address</p>
+                  <div className="text-sm">
+                    <p>{supplier.address.street}</p>
+                    <p>{supplier.address.city} {supplier.address.postalCode}</p>
+                    <p>{supplier.address.province}, {supplier.address.country}</p>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -342,30 +324,30 @@ export function SupplierDetailView({ supplierId }: SupplierDetailViewProps) {
               <CardHeader>
                 <CardTitle className="flex items-center">
                   <Phone className="w-5 h-5 mr-2" />
-                  Contact Information
+                  {t(uiTranslations.contactInformation)}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center space-x-3">
                   <Avatar>
                     <AvatarFallback>
-                      <AvatarInitials name={supplier.contact.primaryContact} />
+                      <AvatarInitials name={supplier.contact.primaryContact || 'N/A'} />
                     </AvatarFallback>
                   </Avatar>
                   <div>
-                    <p className="font-medium">{supplier.contact.primaryContact}</p>
-                    <p className="text-sm text-muted-foreground">{supplier.contact.role}</p>
+                    <p className="font-medium">{supplier.contact.primaryContact || 'No contact assigned'}</p>
+                    <p className="text-sm text-muted-foreground">{supplier.contact.role || 'N/A'}</p>
                   </div>
                 </div>
                 <Separator />
                 <div className="space-y-2">
                   <div className="flex items-center">
                     <Mail className="w-4 h-4 mr-2 text-muted-foreground" />
-                    <span className="text-sm">{supplier.contact.email}</span>
+                    <span className="text-sm">{supplier.contact.email || 'No email provided'}</span>
                   </div>
                   <div className="flex items-center">
                     <Phone className="w-4 h-4 mr-2 text-muted-foreground" />
-                    <span className="text-sm">{supplier.contact.phone}</span>
+                    <span className="text-sm">{supplier.contact.phone || 'No phone provided'}</span>
                   </div>
                 </div>
               </CardContent>
@@ -375,41 +357,8 @@ export function SupplierDetailView({ supplierId }: SupplierDetailViewProps) {
 
         {/* Profile / deBasic Answers */}
         <TabsContent value="profile" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center">
-                <FileText className="w-5 h-5 mr-2" />
-                Supplier Profile (deBasic)
-              </CardTitle>
-              <CardDescription>Key answers synchronized from Jaggaer</CardDescription>
-            </CardHeader>
-            <CardContent>
-              {supplier.debasicAnswers && Object.keys(supplier.debasicAnswers).length > 0 ? (
-                <div className="space-y-4">
-                  {Object.entries(supplier.debasicAnswers)
-                    .sort(([a], [b]) => a.localeCompare(b))
-                    .map(([qcode, value]) => (
-                      <div key={qcode} className="grid grid-cols-1 md:grid-cols-3 gap-2 p-3 rounded-md bg-muted/40">
-                        <div className="text-xs md:text-sm font-mono text-muted-foreground break-all">{qcode}</div>
-                        <div className="md:col-span-2 text-sm">
-                          {Array.isArray(value) ? (
-                            <div className="flex flex-wrap gap-2">
-                              {value.map((v: any, idx: number) => (
-                                <Badge key={idx} variant="outline" className="text-xs">{String(v)}</Badge>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="break-words">{String(value)}</span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              ) : (
-                <div className="text-sm text-muted-foreground">No profile answers available.</div>
-              )}
-            </CardContent>
-          </Card>
+          {/* Profile Validation */}
+          <SupplierProfileValidation supplierId={supplierId} />
         </TabsContent>
 
         <TabsContent value="scorecard" className="space-y-6">

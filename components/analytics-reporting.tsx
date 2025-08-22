@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -24,7 +24,7 @@ import {
   AreaChart,
   Area,
 } from "recharts"
-import {
+import { 
   TrendingUp,
   TrendingDown,
   BarChart3,
@@ -38,17 +38,32 @@ import {
   FileText,
   Shield,
   Zap,
+  Calendar,
+  XCircle
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-// Mock analytics data
-const kpiData = {
-  totalSuppliers: { value: 1247, change: 12, trend: "up" },
-  qualifiedSuppliers: { value: 892, change: 8, trend: "up" },
-  qualificationRate: { value: 71.5, change: -2.3, trend: "down" },
-  avgProcessingTime: { value: 14.2, change: -18, trend: "up" },
-  complianceScore: { value: 94.2, change: 3.1, trend: "up" },
-  documentsProcessed: { value: 3456, change: 22, trend: "up" },
+// Analytics data interface
+interface AnalyticsData {
+  processingEfficiency: any[];
+  certificationStatus: any[];
+  kpis: any;
+  recentActivity: any[];
+  complianceAlerts: any[];
+  complianceTrends: any[];
+  documentStatus: any[];
+  timeRange: string;
+  generatedAt: string;
+}
+
+// Default/loading data
+const defaultKpiData = {
+  totalSuppliers: { value: 0, change: 0, trend: "up" },
+  qualifiedSuppliers: { value: 0, change: 0, trend: "up" },
+  qualificationRate: { value: 0, change: 0, trend: "down" },
+  avgProcessingTime: { value: 0, change: 0, trend: "up" },
+  complianceScore: { value: 0, change: 0, trend: "up" },
+  documentsProcessed: { value: 0, change: 0, trend: "up" },
 }
 
 const monthlyTrends = [
@@ -77,11 +92,12 @@ const certificationTypes = [
   { type: "ISO 14001", total: 234, valid: 218, expiring: 12, expired: 4 },
 ]
 
-const processingEfficiency = [
-  { week: "Week 1", automated: 85, manual: 15, avgTime: 12.3 },
-  { week: "Week 2", automated: 88, manual: 12, avgTime: 11.8 },
-  { week: "Week 3", automated: 91, manual: 9, avgTime: 10.5 },
-  { week: "Week 4", automated: 89, manual: 11, avgTime: 11.2 },
+// Mock data for fallback
+const fallbackProcessingEfficiency = [
+  { week: "Week 1", ocr_success_rate: 85, ai_verification_rate: 78, avg_ocr_time_seconds: 12.3 },
+  { week: "Week 2", ocr_success_rate: 88, ai_verification_rate: 82, avg_ocr_time_seconds: 11.8 },
+  { week: "Week 3", ocr_success_rate: 91, ai_verification_rate: 85, avg_ocr_time_seconds: 10.5 },
+  { week: "Week 4", ocr_success_rate: 89, ai_verification_rate: 83, avg_ocr_time_seconds: 11.2 },
 ]
 
 const complianceAlerts = [
@@ -147,6 +163,77 @@ const detailedReports = [
 export function AnalyticsReporting() {
   const [activeTab, setActiveTab] = useState("overview")
   const [timeRange, setTimeRange] = useState("6months")
+  const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  // Fetch analytics data
+  const fetchAnalyticsData = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const response = await fetch(`/api/analytics?timeRange=${timeRange}`)
+      if (!response.ok) {
+        throw new Error('Failed to fetch analytics data')
+      }
+      const result = await response.json()
+      if (result.success) {
+        setAnalyticsData(result.data)
+      } else {
+        throw new Error(result.error || 'Unknown error')
+      }
+    } catch (err) {
+      console.error('Analytics fetch error:', err)
+      setError(err instanceof Error ? err.message : 'Failed to load analytics')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchAnalyticsData()
+  }, [timeRange])
+
+  // Transform API data to component format
+  const getKpiData = () => {
+    if (!analyticsData?.kpis) return defaultKpiData
+    
+    const kpis = analyticsData.kpis
+    return {
+      totalSuppliers: { 
+        value: kpis.total_suppliers || 0, 
+        change: 0, 
+        trend: "up" 
+      },
+      qualifiedSuppliers: { 
+        value: Math.round((kpis.total_suppliers || 0) * (kpis.verification_pass_rate || 0) / 100), 
+        change: 0, 
+        trend: "up" 
+      },
+      qualificationRate: { 
+        value: kpis.verification_pass_rate || 0, 
+        change: kpis.ocr_success_rate_change || 0, 
+        trend: (kpis.ocr_success_rate_change || 0) >= 0 ? "up" : "down" 
+      },
+      avgProcessingTime: { 
+        value: kpis.avg_ocr_time_seconds || 0, 
+        change: 0, 
+        trend: "up" 
+      },
+      complianceScore: { 
+        value: kpis.ocr_success_rate || 0, 
+        change: kpis.ocr_success_rate_change || 0, 
+        trend: (kpis.ocr_success_rate_change || 0) >= 0 ? "up" : "down" 
+      },
+      documentsProcessed: { 
+        value: kpis.total_documents_processed || 0, 
+        change: kpis.documents_processed_change || 0, 
+        trend: (kpis.documents_processed_change || 0) >= 0 ? "up" : "down" 
+      },
+    }
+  }
+
+  const kpiData = getKpiData()
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("it-IT", {
@@ -378,7 +465,7 @@ export function AnalyticsReporting() {
                       cx="50%"
                       cy="50%"
                       labelLine={false}
-                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      label={({ name, percent }) => `${name} ${percent ? (percent * 100).toFixed(0) : 0}%`}
                       outerRadius={80}
                       fill="#8884d8"
                       dataKey="value"
@@ -396,93 +483,357 @@ export function AnalyticsReporting() {
         </TabsContent>
 
         <TabsContent value="performance" className="space-y-6">
-          {/* Processing Efficiency */}
+          {loading && (
+            <Card>
+              <CardContent className="p-8 text-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+                <p>Loading analytics data...</p>
+              </CardContent>
+            </Card>
+          )}
+          
+          {error && (
+            <Card>
+              <CardContent className="p-8">
+                <Alert>
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription>
+                    Error loading analytics: {error}
+                    <Button variant="outline" size="sm" onClick={fetchAnalyticsData} className="ml-4">
+                      Retry
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              </CardContent>
+            </Card>
+          )}
+
+          {!loading && !error && (
+            <>
+              {/* Processing Efficiency Metrics */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">OCR Success Rate</p>
+                        <p className="text-2xl font-bold">{analyticsData?.kpis?.ocr_success_rate || 0}%</p>
+                        <div className="flex items-center mt-1">
+                          <TrendingUp className="w-4 h-4 text-green-600" />
+                          <span className="text-sm ml-1 text-green-600">Processing</span>
+                        </div>
+                      </div>
+                      <Zap className="w-8 h-8 text-primary" />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">AI Verification Rate</p>
+                        <p className="text-2xl font-bold">{analyticsData?.kpis?.ai_verification_rate || 0}%</p>
+                        <div className="flex items-center mt-1">
+                          <TrendingUp className="w-4 h-4 text-blue-600" />
+                          <span className="text-sm ml-1 text-blue-600">Automated</span>
+                        </div>
+                      </div>
+                      <Shield className="w-8 h-8 text-blue-600" />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Verification Pass Rate</p>
+                        <p className="text-2xl font-bold">{analyticsData?.kpis?.verification_pass_rate || 0}%</p>
+                        <div className="flex items-center mt-1">
+                          <CheckCircle className="w-4 h-4 text-green-600" />
+                          <span className="text-sm ml-1 text-green-600">Quality</span>
+                        </div>
+                      </div>
+                      <Target className="w-8 h-8 text-green-600" />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Avg Processing Time</p>
+                        <p className="text-2xl font-bold">{analyticsData?.kpis?.avg_ocr_time_seconds || 0}s</p>
+                        <div className="flex items-center mt-1">
+                          <Clock className="w-4 h-4 text-primary" />
+                          <span className="text-sm ml-1 text-muted-foreground">Per document</span>
+                        </div>
+                      </div>
+                      <Clock className="w-8 h-8 text-primary" />
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Processing Efficiency Chart */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center">
+                    <Zap className="w-5 h-5 mr-2" />
+                    Processing Efficiency Trends
+                  </CardTitle>
+                  <CardDescription>OCR success rate and AI verification rate over time</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={analyticsData?.processingEfficiency || fallbackProcessingEfficiency}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="week_label" />
+                      <YAxis domain={[0, 100]} />
+                      <Tooltip />
+                      <Legend />
+                      <Line
+                        type="monotone"
+                        dataKey="ocr_success_rate"
+                        stroke="#10b981"
+                        strokeWidth={3}
+                        name="OCR Success Rate %"
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="ai_verification_rate"
+                        stroke="#3b82f6"
+                        strokeWidth={3}
+                        name="AI Verification Rate %"
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+
+              {/* Certification Status Overview */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Document Status Overview</CardTitle>
+                  <CardDescription>Current status of all supplier documents</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left p-2">Document Type</th>
+                          <th className="text-left p-2">Total</th>
+                          <th className="text-left p-2">Valid</th>
+                          <th className="text-left p-2">Issues</th>
+                          <th className="text-left p-2">Failed</th>
+                          <th className="text-left p-2">Pending</th>
+                          <th className="text-left p-2">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(analyticsData?.documentStatus || []).map((doc: any, index: number) => {
+                          const validRate = doc.total > 0 ? (doc.valid / doc.total) * 100 : 0;
+                          const status = validRate >= 90 ? 'Good' : validRate >= 70 ? 'Warning' : 'Critical';
+                          
+                          return (
+                            <tr key={index} className="border-b">
+                              <td className="p-2 font-medium">{doc.doc_type}</td>
+                              <td className="p-2">{doc.total}</td>
+                              <td className="p-2 text-green-600">{doc.valid}</td>
+                              <td className="p-2 text-yellow-600">{doc.issues}</td>
+                              <td className="p-2 text-red-600">{doc.failed}</td>
+                              <td className="p-2 text-blue-600">{doc.pending}</td>
+                              <td className="p-2">
+                                <Badge variant={status === 'Good' ? 'default' : status === 'Warning' ? 'outline' : 'destructive'}>
+                                  {status}
+                                </Badge>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {(!analyticsData?.documentStatus || analyticsData.documentStatus.length === 0) && (
+                      <div className="text-center py-8 text-muted-foreground">
+                        <FileText className="h-12 w-12 mx-auto mb-4" />
+                        <p>No document data available</p>
+                        <p className="text-sm">Run a supplier sync to populate document status</p>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Recent Processing Activity */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Recent Processing Activity</CardTitle>
+                  <CardDescription>Latest document processing results (last 24 hours)</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-3 max-h-96 overflow-y-auto">
+                    {(analyticsData?.recentActivity || []).slice(0, 10).map((activity: any, index: number) => (
+                      <div key={index} className="flex items-center justify-between p-3 border rounded-lg">
+                        <div className="flex items-center space-x-3">
+                          <div className={cn(
+                            "w-3 h-3 rounded-full",
+                            activity.verification_status === 'completed' && activity.verification_result === 'match' 
+                              ? "bg-green-500" 
+                              : activity.verification_status === 'completed' && activity.verification_result !== 'match'
+                              ? "bg-yellow-500"
+                              : activity.analysis_status === 'completed'
+                              ? "bg-blue-500"
+                              : activity.analysis_status === 'failed'
+                              ? "bg-red-500"
+                              : "bg-gray-500"
+                          )} />
+                          <div>
+                            <p className="font-medium">{activity.doc_type} - {activity.filename}</p>
+                            <p className="text-sm text-muted-foreground">{activity.company_name}</p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <Badge variant="outline" className={cn(
+                            "text-xs",
+                            activity.verification_status === 'completed' && activity.verification_result === 'match'
+                              ? "text-green-600 bg-green-100"
+                              : activity.verification_status === 'completed' && activity.verification_result !== 'match'
+                              ? "text-yellow-600 bg-yellow-100"
+                              : activity.analysis_status === 'completed'
+                              ? "text-blue-600 bg-blue-100"
+                              : "text-gray-600 bg-gray-100"
+                          )}>
+                            {activity.verification_status === 'completed' 
+                              ? (activity.verification_result === 'match' ? 'Verified ✓' : 'Issues Found')
+                              : activity.analysis_status === 'completed'
+                              ? 'OCR Complete'
+                              : activity.analysis_status || 'Processing'
+                            }
+                          </Badge>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {new Date(activity.processed_at).toLocaleString('it-IT')}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                    {(!analyticsData?.recentActivity || analyticsData.recentActivity.length === 0) && (
+                      <div className="text-center py-8 text-muted-foreground">
+                        No recent processing activity
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </>
+          )}
+        </TabsContent>
+
+        <TabsContent value="compliance" className="space-y-6">
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Active Alerts</CardTitle>
+                <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-red-600">
+                  {analyticsData?.complianceAlerts?.length || 0}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {analyticsData?.complianceAlerts?.reduce((sum: number, alert: any) => sum + alert.count, 0) || 0} total issues
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Compliance Score</CardTitle>
+                <Shield className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-green-600">
+                  {analyticsData?.complianceTrends?.[analyticsData.complianceTrends.length - 1]?.overall_compliance || 0}%
+                </div>
+                <p className="text-xs text-muted-foreground">Current month average</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Expiring Soon</CardTitle>
+                <Calendar className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-yellow-600">
+                  {analyticsData?.complianceAlerts?.find((alert: any) => alert.alert_type === 'expiring_soon')?.count || 0}
+                </div>
+                <p className="text-xs text-muted-foreground">Next 30 days</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Non-Compliant</CardTitle>
+                <XCircle className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-red-600">
+                  {analyticsData?.complianceAlerts?.find((alert: any) => alert.alert_type === 'verification_failed')?.count || 0}
+                </div>
+                <p className="text-xs text-muted-foreground">Requires attention</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Compliance Trends */}
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center">
-                <Zap className="w-5 h-5 mr-2" />
-                Processing Efficiency
-              </CardTitle>
-              <CardDescription>Automated vs manual processing and average processing times</CardDescription>
+              <CardTitle>Compliance Trends</CardTitle>
+              <CardDescription>Monthly compliance score over time</CardDescription>
             </CardHeader>
             <CardContent>
               <ResponsiveContainer width="100%" height={300}>
-                <AreaChart data={processingEfficiency}>
+                <LineChart data={analyticsData?.complianceTrends || []}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="week" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Area
-                    type="monotone"
-                    dataKey="automated"
-                    stackId="1"
-                    stroke="#10b981"
-                    fill="#10b981"
-                    name="Automated %"
+                  <XAxis dataKey="month_label" />
+                  <YAxis domain={[0, 100]} />
+                  <Tooltip 
+                    formatter={(value: number, name: string) => [
+                      `${value}%`, 
+                      name === 'overall_compliance' ? 'Overall Compliance' :
+                      name === 'processing_compliance' ? 'Processing Compliance' :
+                      name === 'verification_compliance' ? 'Verification Compliance' : name
+                    ]}
                   />
-                  <Area type="monotone" dataKey="manual" stackId="1" stroke="#f59e0b" fill="#f59e0b" name="Manual %" />
-                </AreaChart>
+                  <Line 
+                    type="monotone" 
+                    dataKey="overall_compliance" 
+                    stroke="#10b981" 
+                    strokeWidth={2}
+                    dot={{ fill: '#10b981' }}
+                    name="Overall"
+                  />
+                  <Line 
+                    type="monotone" 
+                    dataKey="processing_compliance" 
+                    stroke="#3b82f6" 
+                    strokeWidth={2}
+                    dot={{ fill: '#3b82f6' }}
+                    name="Processing"
+                  />
+                  <Line 
+                    type="monotone" 
+                    dataKey="verification_compliance" 
+                    stroke="#f59e0b" 
+                    strokeWidth={2}
+                    dot={{ fill: '#f59e0b' }}
+                    name="Verification"
+                  />
+                </LineChart>
               </ResponsiveContainer>
             </CardContent>
           </Card>
 
-          {/* Certification Status Overview */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Certification Status Overview</CardTitle>
-              <CardDescription>Status breakdown by certification type</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Certification Type</TableHead>
-                    <TableHead>Total</TableHead>
-                    <TableHead>Valid</TableHead>
-                    <TableHead>Expiring Soon</TableHead>
-                    <TableHead>Expired</TableHead>
-                    <TableHead>Compliance Rate</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {certificationTypes.map((cert) => (
-                    <TableRow key={cert.type}>
-                      <TableCell className="font-medium">{cert.type}</TableCell>
-                      <TableCell>{cert.total}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center">
-                          <CheckCircle className="w-4 h-4 mr-1 text-green-600" />
-                          {cert.valid}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center">
-                          <AlertTriangle className="w-4 h-4 mr-1 text-yellow-600" />
-                          {cert.expiring}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center">
-                          <Clock className="w-4 h-4 mr-1 text-red-600" />
-                          {cert.expired}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center space-x-2">
-                          <Progress value={(cert.valid / cert.total) * 100} className="w-16 h-2" />
-                          <span className="text-sm">{Math.round((cert.valid / cert.total) * 100)}%</span>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="compliance" className="space-y-6">
           {/* Compliance Alerts */}
           <Card>
             <CardHeader>
@@ -494,53 +845,33 @@ export function AnalyticsReporting() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {complianceAlerts.map((alert) => (
-                  <Alert key={alert.id} className={getAlertColor(alert.severity)}>
-                    <AlertTriangle className="h-4 w-4" />
-                    <AlertDescription>
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <strong>{alert.title}</strong>
-                          <Badge variant="outline" className={cn("text-xs", getAlertColor(alert.severity))}>
-                            {alert.severity} priority
-                          </Badge>
-                        </div>
-                        <p>{alert.description}</p>
-                        <div className="flex items-center justify-between text-sm">
-                          <span>Affected suppliers: {alert.affectedSuppliers}</span>
-                          <span>Due: {formatDate(alert.dueDate)}</span>
-                        </div>
+                {(analyticsData?.complianceAlerts || []).map((alert: any, index: number) => (
+                  <div key={index} className="flex items-center justify-between p-3 border rounded-lg">
+                    <div className="flex items-center space-x-3">
+                      <div className={cn(
+                        "w-3 h-3 rounded-full",
+                        alert.alert_type === 'verification_failed' ? "bg-red-500" :
+                        alert.alert_type === 'expiring_soon' ? "bg-yellow-500" :
+                        "bg-blue-500"
+                      )} />
+                      <div>
+                        <p className="font-medium">{alert.doc_type}</p>
+                        <p className="text-sm text-muted-foreground">{alert.description}</p>
                       </div>
-                    </AlertDescription>
-                  </Alert>
+                    </div>
+                    <Badge variant={alert.alert_type === 'verification_failed' ? 'destructive' : 'outline'}>
+                      {alert.count}
+                    </Badge>
+                  </div>
                 ))}
+                {(!analyticsData?.complianceAlerts || analyticsData.complianceAlerts.length === 0) && (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Shield className="h-12 w-12 mx-auto mb-4 text-green-500" />
+                    <p>No compliance alerts</p>
+                    <p className="text-sm">All documents are in good standing</p>
+                  </div>
+                )}
               </div>
-            </CardContent>
-          </Card>
-
-          {/* Compliance Trends */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Compliance Score Trends</CardTitle>
-              <CardDescription>Overall compliance performance over time</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={monthlyTrends}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" />
-                  <YAxis domain={[85, 100]} />
-                  <Tooltip />
-                  <Legend />
-                  <Line
-                    type="monotone"
-                    dataKey="compliance"
-                    stroke="#10b981"
-                    name="Compliance Score %"
-                    strokeWidth={3}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
             </CardContent>
           </Card>
         </TabsContent>
@@ -605,7 +936,7 @@ export function AnalyticsReporting() {
                     </div>
                     <div className="flex items-center space-x-2">
                       <Badge
-                        variant="outline"
+                        variant={report.status === "completed" ? 'default' : 'outline'}
                         className={cn(
                           "text-xs",
                           report.status === "completed" ? "text-green-600 bg-green-100" : "text-blue-600 bg-blue-100",

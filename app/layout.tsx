@@ -17,7 +17,7 @@ const dmSans = DM_Sans({
 })
 
 export const metadata: Metadata = {
-  title: "CertifyPro - Supplier Certification Management",
+  title: "Supplier Platform - Document Verification Management",
   description: "Professional B2B supplier certification and scorecard verification platform",
   generator: "v0.app",
 }

@@ -31,7 +31,22 @@ import {
   Trash2,
   FileText,
   ExternalLink,
+  Loader2,
 } from "lucide-react"
+
+interface ProfileData {
+  id: string
+  email: string
+  firstName: string
+  lastName: string
+  fullName: string
+  phone: string | null
+  role: string
+  department: string | null
+  avatarUrl: string | null
+  emailConfirmed: boolean
+  joinDate: string
+}
 
 export function SettingsManagement() {
   const { theme, setTheme } = useTheme()
@@ -39,6 +54,16 @@ export function SettingsManagement() {
   const [mounted, setMounted] = useState(false)
   const [openDialog, setOpenDialog] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
+  const [profileLoading, setProfileLoading] = useState(true)
+  const [profileSaving, setProfileSaving] = useState(false)
+  const [profile, setProfile] = useState<ProfileData | null>(null)
+  const [profileForm, setProfileForm] = useState({
+    firstName: "",
+    lastName: "",
+    phone: "",
+    role: "",
+    department: "",
+  })
 
   const [notifications, setNotifications] = useState({
     email: true,
@@ -83,7 +108,74 @@ export function SettingsManagement() {
 
   useEffect(() => {
     setMounted(true)
+    fetchProfile()
   }, [])
+
+  const fetchProfile = async () => {
+    try {
+      setProfileLoading(true)
+      const response = await fetch("/api/profile")
+      
+      if (!response.ok) {
+        throw new Error("Failed to fetch profile")
+      }
+      
+      const data = await response.json()
+      setProfile(data)
+      setProfileForm({
+        firstName: data.firstName || "",
+        lastName: data.lastName || "",
+        phone: data.phone || "",
+        role: data.role || "",
+        department: data.department || "",
+      })
+    } catch (error) {
+      console.error("Error fetching profile:", error)
+      toast({
+        title: "Error",
+        description: "Failed to load profile data",
+        variant: "destructive",
+      })
+    } finally {
+      setProfileLoading(false)
+    }
+  }
+
+  const handleSaveProfile = async () => {
+    try {
+      setProfileSaving(true)
+      
+      const response = await fetch("/api/profile", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(profileForm),
+      })
+      
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || "Failed to update profile")
+      }
+      
+      // Refresh profile data
+      await fetchProfile()
+      
+      toast({
+        title: "Success",
+        description: "Profile updated successfully",
+      })
+    } catch (error) {
+      console.error("Error updating profile:", error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to update profile",
+        variant: "destructive",
+      })
+    } finally {
+      setProfileSaving(false)
+    }
+  }
 
   // Helper: load a specific integration setting from server
   const loadIntegrationSetting = async (key: "jaggaer" | "mistral" | "italian-gov" | "email") => {
@@ -248,9 +340,22 @@ export function SettingsManagement() {
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Settings</h1>
           <p className="text-gray-600 dark:text-gray-400 mt-1">Manage your account and system preferences</p>
         </div>
-        <Button className="bg-violet-600 hover:bg-violet-700">
-          <Settings className="w-4 h-4 mr-2" />
-          Save Changes
+        <Button 
+          onClick={handleSaveProfile}
+          disabled={profileSaving || profileLoading}
+          className="bg-violet-600 hover:bg-violet-700"
+        >
+          {profileSaving ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              Saving...
+            </>
+          ) : (
+            <>
+              <Settings className="w-4 h-4 mr-2" />
+              Save Changes
+            </>
+          )}
         </Button>
       </div>
 
@@ -275,28 +380,90 @@ export function SettingsManagement() {
               <CardDescription>Update your personal and company information</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="firstName">First Name</Label>
-                  <Input id="firstName" defaultValue="Marco" />
+              {profileLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-6 h-6 animate-spin mr-2" />
+                  <span>Loading profile...</span>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="lastName">Last Name</Label>
-                  <Input id="lastName" defaultValue="Rossi" />
+              ) : profile ? (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="firstName">First Name</Label>
+                      <Input 
+                        id="firstName" 
+                        value={profileForm.firstName}
+                        onChange={(e) => setProfileForm(prev => ({ ...prev, firstName: e.target.value }))}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="lastName">Last Name</Label>
+                      <Input 
+                        id="lastName" 
+                        value={profileForm.lastName}
+                        onChange={(e) => setProfileForm(prev => ({ ...prev, lastName: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="email">Email Address</Label>
+                    <Input 
+                      id="email" 
+                      type="email" 
+                      value={profile.email}
+                      disabled
+                      className="bg-gray-50"
+                    />
+                    <p className="text-xs text-gray-500">Email cannot be changed</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="phone">Phone Number</Label>
+                    <Input 
+                      id="phone" 
+                      value={profileForm.phone}
+                      onChange={(e) => setProfileForm(prev => ({ ...prev, phone: e.target.value }))}
+                      placeholder="+39 123 456 7890"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="role">Role</Label>
+                      <Input 
+                        id="role" 
+                        value={profileForm.role}
+                        onChange={(e) => setProfileForm(prev => ({ ...prev, role: e.target.value }))}
+                        placeholder="Your job title"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="department">Department</Label>
+                      <Input 
+                        id="department" 
+                        value={profileForm.department}
+                        onChange={(e) => setProfileForm(prev => ({ ...prev, department: e.target.value }))}
+                        placeholder="Your department"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="company">Company</Label>
+                    <Input 
+                      id="company" 
+                      value={profile.email.split('@')[1] || ''}
+                      disabled
+                      className="bg-gray-50"
+                    />
+                    <p className="text-xs text-gray-500">Derived from email domain</p>
+                  </div>
+                </>
+              ) : (
+                <div className="text-center py-8">
+                  <p className="text-gray-600">Failed to load profile data</p>
+                  <Button onClick={fetchProfile} className="mt-4" variant="outline">
+                    Retry
+                  </Button>
                 </div>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="email">Email Address</Label>
-                <Input id="email" type="email" defaultValue="marco.rossi@company.com" />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="company">Company</Label>
-                <Input id="company" defaultValue="Procurement Solutions Italia" />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="role">Role</Label>
-                <Input id="role" defaultValue="Procurement Manager" />
-              </div>
+              )}
             </CardContent>
           </Card>
 

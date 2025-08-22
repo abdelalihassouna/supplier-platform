@@ -223,6 +223,7 @@ These fields are computed server-side in `app/api/suppliers/route.ts` by joining
 - `DOCUMENT_ANALYSIS_README.md` — Mistral OCR document analysis
 - `DURC_VERIFICATION_README.md` — Detailed AI verification workflow and schema
 - `VERIFICATION_SETUP.md` — Quick setup for AI verification (OpenAI)
+- `SUPPLIER_PROFILE_VALIDATION_AND_I18N.md` — Supplier profile validation and bilingual (EN/IT) UI setup
 
 ## 🔧 Configuration
 

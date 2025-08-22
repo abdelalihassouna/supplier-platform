@@ -2,11 +2,19 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Search,
   Bell,
@@ -24,19 +32,35 @@ import {
   BarChart3,
   Plug,
   Loader2,
+  LogOut,
+  UserCircle,
 } from "lucide-react"
+import Image from "next/image"
 import { cn } from "@/lib/utils"
 import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
+import { signOut } from "@/lib/actions"
 
 interface DashboardLayoutProps {
   children: React.ReactNode
 }
 
+interface UserData {
+  id: string
+  email: string
+  firstName: string
+  lastName: string
+  fullName: string
+  role: string
+}
+
 export function DashboardLayout({ children }: DashboardLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [syncing, setSyncing] = useState(false)
+  const [user, setUser] = useState<UserData | null>(null)
+  const [userLoading, setUserLoading] = useState(true)
   const pathname = usePathname()
+  const router = useRouter()
   const { toast } = useToast()
 
   const handleSync = async (syncType: "incremental" | "full") => {
@@ -71,6 +95,47 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       })
     } finally {
       setSyncing(false)
+    }
+  }
+
+  const fetchUserData = async () => {
+    try {
+      setUserLoading(true)
+      const response = await fetch("/api/profile")
+      
+      if (!response.ok) {
+        throw new Error("Failed to fetch user data")
+      }
+      
+      const userData = await response.json()
+      setUser(userData)
+    } catch (error) {
+      console.error("Error fetching user data:", error)
+      // Don't show toast error for user data fetch as it's not critical
+    } finally {
+      setUserLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchUserData()
+  }, [])
+
+  const handleSignOut = async () => {
+    try {
+      await signOut()
+      toast({
+        title: "Signed out",
+        description: "You have been successfully signed out.",
+      })
+      router.push("/auth/login")
+    } catch (error) {
+      console.error("Error signing out:", error)
+      toast({
+        title: "Sign out failed",
+        description: "An error occurred while signing out.",
+        variant: "destructive",
+      })
     }
   }
 
@@ -123,20 +188,45 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       >
         <div className="flex h-full flex-col">
           {/* Logo */}
-          <div className="flex h-16 items-center justify-between px-4 border-b border-sidebar-border">
+          <div className="flex h-20 items-center justify-between px-4 border-b border-sidebar-border bg-gradient-to-r from-sidebar to-sidebar/95">
             {sidebarOpen && (
-              <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-                  <Building2 className="w-5 h-5 text-primary-foreground" />
+              <div className="flex items-center space-x-4 group cursor-pointer hover:opacity-90 transition-opacity">
+                <div className="relative w-14 h-14 flex-shrink-0">
+                  <Image
+                    src="/logo-extended.png"
+                    alt="Supplier Platform Logo"
+                    fill
+                    className="object-contain drop-shadow-sm"
+                  />
                 </div>
-                <span className="font-bold text-sidebar-foreground">CertifyPro</span>
+                <div className="flex flex-col min-w-0">
+                  <span className="font-bold text-lg text-sidebar-foreground truncate">
+                    V-AI
+                  </span>
+                  <span className="text-xs text-muted-foreground/80 truncate">
+                    Vendor AI
+                  </span>
+                </div>
+              </div>
+            )}
+            {!sidebarOpen && (
+              <div className="flex items-center justify-center w-full group">
+                <div className="relative w-12 h-12 hover:scale-105 transition-transform duration-200">
+                  <Image
+                    src="/logo.png"
+                    alt="Supplier Platform Logo"
+                    fill
+                    className="object-contain drop-shadow-sm"
+                  />
+                </div>
               </div>
             )}
             <Button
               variant="ghost"
               size="sm"
               onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="text-sidebar-foreground hover:bg-sidebar-accent"
+              className="text-sidebar-foreground hover:bg-sidebar-accent/80 hover:text-sidebar-accent-foreground transition-all duration-200 rounded-md p-2"
+              title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
             >
               {sidebarOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
             </Button>
@@ -231,13 +321,67 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 </Badge>
               </Button>
 
-              {/* User Profile */}
-              <Link href="/profile">
-                <Button variant="ghost" size="sm">
-                  <User className="w-4 h-4 mr-2" />
-                  Admin
-                </Button>
-              </Link>
+              {/* User Profile Dropdown */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm" className="flex items-center space-x-2">
+                    <UserCircle className="w-4 h-4" />
+                    <span>
+                      {userLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : user ? (
+                        user.firstName || user.email.split('@')[0]
+                      ) : (
+                        "User"
+                      )}
+                    </span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel className="font-normal">
+                    <div className="flex flex-col space-y-1">
+                      <p className="text-sm font-medium leading-none">
+                        {userLoading ? (
+                          "Loading..."
+                        ) : user ? (
+                          user.fullName || `${user.firstName} ${user.lastName}`.trim() || user.email.split('@')[0]
+                        ) : (
+                          "Unknown User"
+                        )}
+                      </p>
+                      <p className="text-xs leading-none text-muted-foreground">
+                        {userLoading ? "" : user?.email || "No email"}
+                      </p>
+                      {user?.role && (
+                        <p className="text-xs leading-none text-muted-foreground">
+                          {user.role}
+                        </p>
+                      )}
+                    </div>
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem asChild>
+                    <Link href="/profile" className="flex items-center">
+                      <User className="w-4 h-4 mr-2" />
+                      Profile
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link href="/settings" className="flex items-center">
+                      <Settings className="w-4 h-4 mr-2" />
+                      Settings
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={handleSignOut}
+                    className="flex items-center text-red-600 focus:text-red-600"
+                  >
+                    <LogOut className="w-4 h-4 mr-2" />
+                    Sign out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
         </header>

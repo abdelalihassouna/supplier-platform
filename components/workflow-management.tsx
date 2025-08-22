@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,6 +9,9 @@ import { Progress } from "@/components/ui/progress"
 import { Avatar, AvatarFallback, AvatarInitials } from "@/components/ui/avatar"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
 import {
   GitBranch,
   Users,
@@ -21,8 +24,14 @@ import {
   Eye,
   Play,
   ArrowRight,
+  Zap,
+  FileCheck,
+  Workflow,
+  ExternalLink,
+  Settings,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import Link from "next/link"
 
 // Mock workflow data
 const mockWorkflows = [
@@ -209,7 +218,59 @@ const mockNotifications = [
 export function WorkflowManagement() {
   const [activeTab, setActiveTab] = useState("workflows")
   const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null)
+  const [selectedSuppliers, setSelectedSuppliers] = useState<string[]>([])
+  const [showBulkDialog, setShowBulkDialog] = useState(false)
   const [taskFilter, setTaskFilter] = useState("all")
+  const [q1WorkflowResults, setQ1WorkflowResults] = useState<any>(null)
+  const [isRunningQ1, setIsRunningQ1] = useState(false)
+  const [selectedSupplierId, setSelectedSupplierId] = useState<string | null>(null)
+  const [workflows, setWorkflows] = useState<any[]>([])
+  const [suppliers, setSuppliers] = useState<any[]>([])
+  const [workflowRuns, setWorkflowRuns] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [createWorkflowOpen, setCreateWorkflowOpen] = useState(false)
+  const [createWorkflowData, setCreateWorkflowData] = useState({
+    supplierId: '',
+    includeSOA: false,
+    includeWhiteList: false
+  })
+
+  // Load real data on component mount
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        // Load suppliers
+        const suppliersResponse = await fetch('/api/suppliers')
+        if (suppliersResponse.ok) {
+          const suppliersData = await suppliersResponse.json()
+          setSuppliers(suppliersData.suppliers || [])
+        }
+      } catch (error) {
+        console.error('Failed to load data:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadData()
+  }, [])
+
+  // Load workflow runs when a supplier is selected
+  useEffect(() => {
+    const loadRuns = async () => {
+      if (!selectedSupplierId) return
+      try {
+        const resp = await fetch(`/api/workflows/q1/run?supplierId=${encodeURIComponent(selectedSupplierId)}`)
+        if (resp.ok) {
+          const data = await resp.json()
+          setWorkflowRuns(data.runs || [])
+        }
+      } catch (e) {
+        console.error('Failed to load workflow runs:', e)
+      }
+    }
+    loadRuns()
+  }, [selectedSupplierId])
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -267,7 +328,7 @@ export function WorkflowManagement() {
   }
 
   const formatDateTime = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString("it-IT", {
+    return new Date(dateString).toLocaleString("it-IT", {
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
@@ -276,26 +337,224 @@ export function WorkflowManagement() {
     })
   }
 
-  const filteredTasks = mockTasks.filter((task) => {
+  // Convert workflow runs to task-like format for display
+  const tasksFromWorkflows = workflowRuns.flatMap(run => 
+    run.steps?.map((step: any) => ({
+      id: `${run.id}-${step.step_key}`,
+      title: `${step.name} - ${suppliers.find(s => s.id === run.supplier_id)?.company_name || 'Unknown Supplier'}`,
+      description: step.issues?.join(', ') || `${step.name} for Q1 workflow`,
+      workflowId: run.id,
+      workflowName: 'Q1 Supplier Qualification',
+      supplierId: run.supplier_id,
+      supplierName: suppliers.find(s => s.id === run.supplier_id)?.company_name || 'Unknown Supplier',
+      assignee: 'System',
+      status: step.status === 'pass' ? 'completed' : step.status === 'fail' ? 'requires_approval' : 'pending',
+      priority: step.status === 'fail' ? 'high' : 'medium',
+      dueDate: step.ended_at || step.started_at,
+      createdDate: step.started_at,
+      estimatedHours: 1,
+      actualHours: step.ended_at ? 1 : 0,
+    })) || []
+  )
+
+  const allTasks = workflowRuns.length > 0 ? tasksFromWorkflows : [...mockTasks]
+
+  const filteredTasks = allTasks.filter((task) => {
     if (taskFilter === "all") return true
     if (taskFilter === "my_tasks") return task.assignee === "Admin User"
     if (taskFilter === "overdue") return new Date(task.dueDate) < new Date()
     return task.status === taskFilter
   })
 
+  const runQ1Workflow = async (supplierId: string, options = { includeSOA: true, includeWhiteList: true }) => {
+    setIsRunningQ1(true)
+    setSelectedSupplierId(supplierId)
+    
+    try {
+      const response = await fetch('/api/workflows/q1/run', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          supplierId,
+          ...options,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to run Q1 workflow')
+      }
+
+      const result = await response.json()
+      setQ1WorkflowResults(result)
+
+      // Immediately refresh workflow runs list
+      try {
+        const workflowsResponse = await fetch(`/api/workflows/q1/run?supplierId=${encodeURIComponent(supplierId)}`)
+        if (workflowsResponse.ok) {
+          const workflowsData = await workflowsResponse.json()
+          setWorkflowRuns(workflowsData.runs || [])
+        }
+      } catch (e) {
+        console.error('Failed to refresh workflow runs after trigger:', e)
+      }
+    } catch (error) {
+      console.error('Q1 workflow failed:', error)
+      alert('Failed to run Q1 workflow. Please try again.')
+    } finally {
+      setIsRunningQ1(false)
+    }
+  }
+
+  const handleCreateWorkflow = async () => {
+    if (!createWorkflowData.supplierId) {
+      alert('Please select a supplier')
+      return
+    }
+
+    await runQ1Workflow(createWorkflowData.supplierId, {
+      includeSOA: createWorkflowData.includeSOA,
+      includeWhiteList: createWorkflowData.includeWhiteList
+    })
+
+    // Reset form and close dialog
+    setCreateWorkflowData({
+      supplierId: '',
+      includeSOA: false,
+      includeWhiteList: false
+    })
+    setCreateWorkflowOpen(false)
+  }
+
+  // Poll workflow runs while a run is in progress
+  useEffect(() => {
+    if (!isRunningQ1 || !selectedSupplierId) return
+
+    const interval = setInterval(async () => {
+      try {
+        const workflowsResponse = await fetch(`/api/workflows/q1/run?supplierId=${encodeURIComponent(selectedSupplierId)}`)
+        if (workflowsResponse.ok) {
+          const workflowsData = await workflowsResponse.json()
+          setWorkflowRuns(workflowsData.runs || [])
+          // Stop polling if all runs have status not equal to 'running'
+          const anyRunning = (workflowsData.runs || []).some((r: any) => r.status === 'running')
+          if (!anyRunning) {
+            clearInterval(interval)
+          }
+        }
+      } catch (e) {
+        console.error('Polling workflow runs failed:', e)
+      }
+    }, 3000)
+
+    return () => clearInterval(interval)
+  }, [isRunningQ1, selectedSupplierId])
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-3xl font-bold">Workflow Management</h1>
-          <p className="text-muted-foreground">Manage verification workflows and task assignments</p>
+          <h2 className="text-3xl font-bold tracking-tight">Workflows</h2>
+          <p className="text-muted-foreground">
+            Manage and monitor your supplier verification workflows
+          </p>
         </div>
-        <div className="flex items-center space-x-2">
-          <Button variant="outline">
-            <GitBranch className="w-4 h-4 mr-2" />
-            Create Workflow
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => openBulkDialog()}>
+            <Users className="w-4 h-4 mr-2" />
+            Bulk Workflow
           </Button>
+          <Button variant="outline" asChild>
+            <Link href="/workflows/builder">
+              <Settings className="w-4 h-4 mr-2" />
+              Workflow Builder
+            </Link>
+          </Button>
+          <Dialog open={createWorkflowOpen} onOpenChange={setCreateWorkflowOpen}>
+            <DialogTrigger asChild>
+              <Button>
+                <Play className="w-4 h-4 mr-2" />
+                Create Workflow
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[425px]">
+              <DialogHeader>
+                <DialogTitle>Create Q1 Workflow</DialogTitle>
+                <DialogDescription>
+                  Create a new Q1 supplier qualification workflow for a selected supplier.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-4 py-4">
+                <div className="space-y-2">
+                  <Label htmlFor="supplier">Supplier</Label>
+                  <Select 
+                    value={createWorkflowData.supplierId} 
+                    onValueChange={(value) => setCreateWorkflowData(prev => ({ ...prev, supplierId: value }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a supplier" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {suppliers.map((supplier) => (
+                        <SelectItem key={supplier.id} value={supplier.id}>
+                          {supplier.company_name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-3">
+                  <Label>Workflow Options</Label>
+                  <div className="flex items-center space-x-2">
+                    <Checkbox 
+                      id="includeSOA"
+                      checked={createWorkflowData.includeSOA}
+                      onCheckedChange={(checked) => 
+                        setCreateWorkflowData(prev => ({ ...prev, includeSOA: !!checked }))
+                      }
+                    />
+                    <Label htmlFor="includeSOA" className="text-sm font-normal">
+                      Include SOA verification
+                    </Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Checkbox 
+                      id="includeWhiteList"
+                      checked={createWorkflowData.includeWhiteList}
+                      onCheckedChange={(checked) => 
+                        setCreateWorkflowData(prev => ({ ...prev, includeWhiteList: !!checked }))
+                      }
+                    />
+                    <Label htmlFor="includeWhiteList" className="text-sm font-normal">
+                      Include White List verification
+                    </Label>
+                  </div>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setCreateWorkflowOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={handleCreateWorkflow} disabled={!createWorkflowData.supplierId || isRunningQ1}>
+                  {isRunningQ1 ? 'Creating...' : 'Create Workflow'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <Select onValueChange={(supplierId) => runQ1Workflow(supplierId)} disabled={isRunningQ1 || suppliers.length === 0}>
+            <SelectTrigger className="w-48">
+              <SelectValue placeholder={isRunningQ1 ? "Running Q1..." : "Run Q1 for Supplier"} />
+            </SelectTrigger>
+            <SelectContent>
+              {suppliers.map((supplier) => (
+                <SelectItem key={supplier.id} value={supplier.id}>
+                  {supplier.company_name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button>
             <Users className="w-4 h-4 mr-2" />
             Assign Tasks
@@ -313,10 +572,141 @@ export function WorkflowManagement() {
         </TabsList>
 
         <TabsContent value="workflows" className="space-y-6">
+          {/* Q1 Workflow Results */}
+          {q1WorkflowResults && (
+            <Card className="mb-6">
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <FileCheck className="w-5 h-5 mr-2" />
+                  Q1 Workflow Results
+                </CardTitle>
+                <CardDescription>
+                  Supplier ID: {selectedSupplierId} • Status: {q1WorkflowResults.overall}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium">Overall Result:</span>
+                    <Badge className={cn("text-xs", 
+                      q1WorkflowResults.overall === 'qualified' ? 'text-green-600 bg-green-100' :
+                      q1WorkflowResults.overall === 'conditionally_qualified' ? 'text-yellow-600 bg-yellow-100' :
+                      'text-red-600 bg-red-100'
+                    )} variant="outline">
+                      {q1WorkflowResults.overall?.replace('_', ' ')}
+                    </Badge>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <h4 className="font-medium">Step Results:</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {q1WorkflowResults.steps?.map((step: any) => (
+                        <div key={step.step_key} className="flex items-center justify-between p-2 border rounded">
+                          <span className="text-sm">{step.name}</span>
+                          <div className="flex items-center space-x-1">
+                            {getStatusIcon(step.status)}
+                            <Badge className={cn("text-xs", getStatusColor(step.status))} variant="outline">
+                              {step.status}
+                            </Badge>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {q1WorkflowResults.notes?.length > 0 && (
+                    <div className="space-y-2">
+                      <h4 className="font-medium">Issues:</h4>
+                      <ul className="text-sm text-muted-foreground space-y-1">
+                        {q1WorkflowResults.notes.map((note: string, index: number) => (
+                          <li key={index}>• {note}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Workflow Overview */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-4">
-              {mockWorkflows.map((workflow) => (
+              {loading ? (
+                <Card>
+                  <CardContent className="p-6">
+                    <div className="text-center text-muted-foreground">Loading workflows...</div>
+                  </CardContent>
+                </Card>
+              ) : workflowRuns.length > 0 ? (
+                workflowRuns.map((run) => (
+                  <Card
+                    key={run.id}
+                    className="cursor-pointer hover:shadow-md transition-shadow"
+                    onClick={() => setSelectedWorkflow(run.id)}
+                  >
+                    <CardHeader>
+                      <div className="flex items-center justify-between">
+                        <div className="space-y-1">
+                          <CardTitle className="flex items-center">
+                            <GitBranch className="w-5 h-5 mr-2" />
+                            Q1 Qualification - {suppliers.find(s => s.id === run.supplier_id)?.company_name || 'Unknown Supplier'}
+                          </CardTitle>
+                          <CardDescription>
+                            Started: {formatDate(run.started_at)} • {run.steps?.length || 0} steps
+                          </CardDescription>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <Badge className={cn("text-xs", 
+                            run.overall === 'qualified' ? 'text-green-600 bg-green-100' :
+                            run.overall === 'conditionally_qualified' ? 'text-yellow-600 bg-yellow-100' :
+                            run.overall === 'not_qualified' ? 'text-red-600 bg-red-100' :
+                            'text-blue-600 bg-blue-100'
+                          )} variant="outline">
+                            {run.overall?.replace('_', ' ') || run.status}
+                          </Badge>
+                        </div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span>Progress</span>
+                          <span>
+                            {run.steps?.filter((s: any) => s.status === 'pass').length || 0}/{run.steps?.length || 0} steps passed
+                          </span>
+                        </div>
+                        <Progress 
+                          value={run.steps?.length ? (run.steps.filter((s: any) => s.status === 'pass').length / run.steps.length) * 100 : 0} 
+                          className="h-2" 
+                        />
+                      </div>
+                      <div className="flex items-center justify-between text-sm text-muted-foreground">
+                        <span>Status: {run.status}</span>
+                        <span>
+                          {run.ended_at ? `Completed: ${formatDate(run.ended_at)}` : 'In Progress'}
+                        </span>
+                      </div>
+                      <div className="flex gap-2 pt-2">
+                        <Button variant="outline" size="sm" asChild>
+                          <Link href={`/workflows/${run.supplier_id}`}>
+                            <Workflow className="w-4 h-4 mr-1" />
+                            View Flow
+                          </Link>
+                        </Button>
+                        <Button variant="ghost" size="sm">
+                          <Eye className="w-4 h-4" />
+                        </Button>
+                        <Button variant="secondary" size="sm" onClick={() => openBulkDialog([run.supplier_id])}>
+                          <Users className="w-4 h-4 mr-1" />
+                          Bulk
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))
+              ) : (
+                mockWorkflows.map((workflow) => (
                 <Card
                   key={workflow.id}
                   className="cursor-pointer hover:shadow-md transition-shadow"
@@ -360,9 +750,24 @@ export function WorkflowManagement() {
                         completed
                       </span>
                     </div>
+                    <div className="flex gap-2 pt-2">
+                      <Button variant="outline" size="sm" asChild>
+                        <Link href={`/workflows/${suppliers[0]?.id || '11594'}`}>
+                          <Workflow className="w-4 h-4 mr-1" />
+                          View Flow
+                        </Link>
+                      </Button>
+                      <Button variant="ghost" size="sm">
+                        <Eye className="w-4 h-4" />
+                      </Button>
+                      <Button variant="secondary" size="sm" onClick={() => openBulkDialog([suppliers[0]?.id?.toString() || '11594'])}>
+                        <Users className="w-4 h-4 mr-1" />
+                        Bulk
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
-              ))}
+              )))}
             </div>
 
             {/* Workflow Details */}
@@ -590,6 +995,131 @@ export function WorkflowManagement() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Bulk Workflow Dialog */}
+      <Dialog open={showBulkDialog} onOpenChange={setShowBulkDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Run Bulk Q1 Workflow</DialogTitle>
+            <DialogDescription>
+              Select suppliers to run Q1 verification workflow for multiple suppliers at once.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div className="max-h-96 overflow-y-auto">
+              <div className="space-y-2">
+                {suppliers.map((supplier) => (
+                  <div key={supplier.id} className="flex items-center space-x-2 p-2 border rounded">
+                    <Checkbox
+                      id={`supplier-${supplier.id}`}
+                      checked={selectedSuppliers.includes(supplier.id.toString())}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          setSelectedSuppliers(prev => [...prev, supplier.id.toString()])
+                        } else {
+                          setSelectedSuppliers(prev => prev.filter(id => id !== supplier.id.toString()))
+                        }
+                      }}
+                    />
+                    <Label htmlFor={`supplier-${supplier.id}`} className="flex-1 cursor-pointer">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <p className="font-medium">{supplier.company_name}</p>
+                          <p className="text-sm text-muted-foreground">{supplier.email}</p>
+                        </div>
+                        <Badge variant="outline">{supplier.status}</Badge>
+                      </div>
+                    </Label>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            <div className="flex items-center justify-between text-sm text-muted-foreground">
+              <span>{selectedSuppliers.length} suppliers selected</span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (selectedSuppliers.length === suppliers.length) {
+                    setSelectedSuppliers([])
+                  } else {
+                    setSelectedSuppliers(suppliers.map(s => s.id.toString()))
+                  }
+                }}
+              >
+                {selectedSuppliers.length === suppliers.length ? 'Deselect All' : 'Select All'}
+              </Button>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowBulkDialog(false)}>
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleBulkWorkflow}
+              disabled={selectedSuppliers.length === 0 || isRunningQ1}
+            >
+              {isRunningQ1 ? 'Running...' : `Start Workflow for ${selectedSuppliers.length} Suppliers`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
+
+  // Helper functions
+  function openBulkDialog(supplierIds: string[] = []) {
+    setSelectedSuppliers(supplierIds)
+    setShowBulkDialog(true)
+  }
+
+  async function handleBulkWorkflow() {
+    if (selectedSuppliers.length === 0) return
+    
+    setIsRunningQ1(true)
+    try {
+      // Run workflows for all selected suppliers in parallel
+      const workflowPromises = selectedSuppliers.map(async (supplierId) => {
+        const response = await fetch('/api/workflows/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            supplierId, 
+            options: { 
+              includeSOA: true, 
+              checkWhitelist: true 
+            } 
+          })
+        })
+        
+        if (!response.ok) {
+          throw new Error(`Failed to start workflow for supplier ${supplierId}`)
+        }
+        
+        return response.json()
+      })
+
+      const results = await Promise.allSettled(workflowPromises)
+      
+      // Show results summary
+      const successful = results.filter(r => r.status === 'fulfilled').length
+      const failed = results.filter(r => r.status === 'rejected').length
+      
+      alert(`Bulk workflow started: ${successful} successful, ${failed} failed`)
+      
+      // Refresh workflow runs
+      window.location.reload()
+      setShowBulkDialog(false)
+      setSelectedSuppliers([])
+      
+    } catch (error) {
+      console.error('Bulk workflow error:', error)
+      alert('Failed to start bulk workflow')
+    } finally {
+      setIsRunningQ1(false)
+    }
+  }
 }

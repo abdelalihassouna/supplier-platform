@@ -23,7 +23,7 @@ export function OnboardingFlow() {
   const steps = [
     {
       id: "welcome",
-      title: "Welcome to CertifyPro",
+      title: "Welcome to Supplier Platform",
       description: "Let's get you set up with your supplier certification platform",
       icon: Rocket,
     },
@@ -83,7 +83,7 @@ export function OnboardingFlow() {
         {/* Progress Header */}
         <div className="text-center mb-8">
           <div className="flex items-center justify-center mb-4">
-            <div className="text-2xl font-bold text-violet-600">CertifyPro</div>
+            <div className="text-2xl font-bold text-violet-600">Supplier Platform</div>
           </div>
           <Progress value={progress} className="w-full max-w-md mx-auto mb-4" />
           <p className="text-sm text-gray-600">
@@ -137,7 +137,7 @@ export function OnboardingFlow() {
                 <div className="space-y-4">
                   <h3 className="text-xl font-semibold">Welcome to the future of supplier certification</h3>
                   <p className="text-gray-600 max-w-md mx-auto">
-                    CertifyPro streamlines your supplier verification process with automated compliance checking,
+                    Supplier Platform streamlines your supplier verification process with automated compliance checking,
                     real-time monitoring, and comprehensive reporting for Italian regulatory requirements.
                   </p>
                   <div className="grid grid-cols-3 gap-4 mt-6">
@@ -224,7 +224,7 @@ export function OnboardingFlow() {
             {currentStep === 2 && (
               <div className="space-y-6">
                 <div>
-                  <h3 className="text-lg font-semibold mb-3">What are your main goals with CertifyPro?</h3>
+                  <h3 className="text-lg font-semibold mb-3">What are your main goals with Supplier Platform?</h3>
                   <div className="grid grid-cols-2 gap-3">
                     {[
                       "Automate supplier verification",
@@ -277,7 +277,7 @@ export function OnboardingFlow() {
               <div className="space-y-6">
                 <div>
                   <h3 className="text-lg font-semibold mb-3">Connect Your Systems</h3>
-                  <p className="text-gray-600 mb-4">Select the systems you'd like to integrate with CertifyPro</p>
+                  <p className="text-gray-600 mb-4">Select the systems you'd like to integrate with Supplier Platform</p>
 
                   <div className="space-y-3">
                     {[

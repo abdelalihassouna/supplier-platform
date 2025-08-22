@@ -257,17 +257,18 @@ class ISOVerificationStrategy extends DocumentVerificationStrategy {
       }
     }
     
-    // Validate certification entity
+    // Certification body: presence-only requirement (do not mismatch on unknown body)
     if (ocrData.ente_certificatore) {
-      const knownCertifiers = ['DNV', 'TÜV', 'RINA', 'SGS', 'BUREAU VERITAS', 'LLOYD', 'CERTIQUALITY']
-      const hasKnownCertifier = knownCertifiers.some(certifier => 
-        ocrData.ente_certificatore.toUpperCase().includes(certifier)
-      )
-      validations.push({
-        field: 'ente_certificatore',
-        status: hasKnownCertifier ? 'match' : 'mismatch',
-        notes: hasKnownCertifier ? 'Recognized certification body' : 'Check certification body validity'
-      })
+      const value = String(ocrData.ente_certificatore).trim()
+      if (value.length > 0) {
+        const knownCertifiers = ['DNV', 'TÜV', 'RINA', 'SGS', 'BUREAU VERITAS', 'LLOYD', 'CERTIQUALITY']
+        const recognized = knownCertifiers.some(certifier => value.toUpperCase().includes(certifier))
+        validations.push({
+          field: 'ente_certificatore',
+          status: 'match',
+          notes: recognized ? 'Recognized certification body' : 'Captured certification body (not validated against whitelist)'
+        })
+      }
     }
     
     // Validate certificate number format
@@ -306,24 +307,43 @@ class CCIAAVerificationStrategy extends DocumentVerificationStrategy {
     return `CCIAA Document Verification - Italian Chamber of Commerce business registry certificate validation.`
   }
 
+  // Normalize various OCR variants of REA into canonical form: "AA-<digits>"
+  private normalizeREA(value?: string | null): string | null {
+    if (!value) return null
+    let v = String(value).toUpperCase().trim()
+    // Remove leading/trailing label and punctuation: e.g., "REA:", "N. REA"
+    v = v.replace(/\bN\.?\s*REA\b[:\-\s]*/g, '')
+    v = v.replace(/\bREA\b[:\-\s]*/g, '')
+    // Unify separators and remove stray punctuation
+    v = v.replace(/[._]/g, '')
+    v = v.replace(/[\/\\:–—−]+/g, '-')
+    v = v.replace(/\s*[-]\s*/g, '-')
+    v = v.replace(/\s+/g, '')
+    // If it looks like AA123456 or AA-123456, normalize to AA-123456
+    const m = v.match(/^([A-Z]{2})-?(\d{1,7})$/)
+    if (m) return `${m[1]}-${m[2]}`
+    return v
+  }
+
   validateDocumentSpecificFields(ocrData: any) {
     const validations = []
     
     // Validate REA number format
     if (ocrData.rea) {
-      const reaPattern = /^[A-Z]{2}[-\s]?\d{6,7}$/i
-      const isValidREA = reaPattern.test(ocrData.rea.replace(/\s/g, ''))
+      const normalized = this.normalizeREA(ocrData.rea)
+      const reaPattern = /^[A-Z]{2}-\d{1,7}$/
+      const isValidREA = !!normalized && reaPattern.test(normalized)
       if (!isValidREA) {
         validations.push({
           field: 'rea',
           status: 'invalid',
-          notes: 'Invalid REA format - should be like "MI-1234567" or "RM1234567"'
+          notes: 'Invalid REA format - expected like "MI-1234567" (also accepts variants such as "RM1234567", "FR - 41256")'
         })
       } else {
         validations.push({
           field: 'rea',
           status: 'match',
-          notes: `Valid REA number: ${ocrData.rea}`
+          notes: `Valid REA number (normalized): ${normalized}`
         })
       }
     }
