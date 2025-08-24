@@ -49,9 +49,9 @@ export async function GET(request: NextRequest) {
         total_documents,
         ROUND((completed_ocr::numeric / NULLIF(total_documents, 0)) * 100, 1) as ocr_success_rate,
         ROUND((failed_ocr::numeric / NULLIF(total_documents, 0)) * 100, 1) as ocr_failure_rate,
-        ROUND(avg_ocr_time_seconds, 1) as avg_ocr_time_seconds,
+        ROUND(avg_ocr_time_seconds::numeric, 1) as avg_ocr_time_seconds,
         ROUND((completed_ai_verification::numeric / NULLIF(completed_ocr, 0)) * 100, 1) as ai_verification_rate,
-        ROUND(avg_ai_verification_time_seconds, 1) as avg_ai_verification_time_seconds
+        ROUND(avg_ai_verification_time_seconds::numeric, 1) as avg_ai_verification_time_seconds
       FROM processing_stats
       ORDER BY week_start ASC
     `;
@@ -88,7 +88,7 @@ export async function GET(request: NextRequest) {
         ROUND((ocr_completed::numeric / NULLIF(total_documents, 0)) * 100, 1) as ocr_success_rate,
         ROUND((ai_verified::numeric / NULLIF(ocr_completed, 0)) * 100, 1) as ai_verification_rate,
         ROUND((verification_passed::numeric / NULLIF(ai_verified, 0)) * 100, 1) as verification_pass_rate,
-        ROUND(avg_processing_time, 1) as avg_processing_time_seconds
+        ROUND(avg_processing_time::numeric, 1) as avg_processing_time_seconds
       FROM document_stats
       ORDER BY total_documents DESC
     `;
@@ -128,8 +128,8 @@ export async function GET(request: NextRequest) {
         ROUND((cp.successful_ocr::numeric / NULLIF(cp.total_documents_processed, 0)) * 100, 1) as ocr_success_rate,
         ROUND((cp.successful_ai_verification::numeric / NULLIF(cp.successful_ocr, 0)) * 100, 1) as ai_verification_rate,
         ROUND((cp.passed_verifications::numeric / NULLIF(cp.successful_ai_verification, 0)) * 100, 1) as verification_pass_rate,
-        ROUND(cp.avg_ocr_time, 1) as avg_ocr_time_seconds,
-        ROUND(cp.avg_ai_time, 1) as avg_ai_verification_time_seconds,
+        ROUND(cp.avg_ocr_time::numeric, 1) as avg_ocr_time_seconds,
+        ROUND(cp.avg_ai_time::numeric, 1) as avg_ai_verification_time_seconds,
         -- Calculate percentage changes
         CASE 
           WHEN pp.total_documents_processed > 0 THEN 
@@ -196,7 +196,7 @@ export async function GET(request: NextRequest) {
           'Documents with verification failures' as description
         FROM document_analysis da
         LEFT JOIN document_verification dv ON da.id = dv.analysis_id
-        WHERE dv.verification_status = 'failed' OR dv.verification_result IN ('mismatch', 'partial_match')
+        WHERE (dv.verification_status = 'failed' OR dv.verification_result IN ('mismatch', 'partial_match'))
           AND da.created_at >= NOW() - INTERVAL '7 days'
         GROUP BY da.doc_type
       ),
@@ -210,11 +210,13 @@ export async function GET(request: NextRequest) {
         LEFT JOIN document_analysis da ON s.id = da.supplier_id
         WHERE da.id IS NULL
       )
-      SELECT doc_type, count, alert_type, description FROM expiring_documents
-      UNION ALL
-      SELECT doc_type, count, alert_type, description FROM verification_failures
-      UNION ALL
-      SELECT doc_type, count, alert_type, description FROM missing_documents
+      SELECT * FROM (
+        SELECT doc_type, count, alert_type, description FROM expiring_documents
+        UNION ALL
+        SELECT doc_type, count, alert_type, description FROM verification_failures
+        UNION ALL
+        SELECT doc_type, count, alert_type, description FROM missing_documents
+      ) alerts
       WHERE count > 0
       ORDER BY count DESC
     `;
@@ -266,6 +268,75 @@ export async function GET(request: NextRequest) {
 
     const { rows: documentStatus } = await query(documentStatusQuery, [fromDate]);
 
+    // 8. Bulk Verification Timing - Run-level KPIs
+    const runMetricsQuery = `
+      WITH runs AS (
+        SELECT 
+          id, status, started_at, ended_at,
+          EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - started_at)) AS duration_seconds
+        FROM workflow_runs
+        WHERE started_at >= $1
+      ),
+      steps_per_run AS (
+        SELECT run_id, COUNT(*) AS step_count
+        FROM workflow_step_results
+        GROUP BY run_id
+      )
+      SELECT 
+        COUNT(*) AS total_runs,
+        COUNT(*) FILTER (WHERE status = 'completed') AS completed_runs,
+        ROUND(AVG(duration_seconds)::numeric, 1) AS avg_run_duration_seconds,
+        ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_seconds))::numeric, 1) AS p95_run_duration_seconds,
+        ROUND(AVG(sp.step_count), 1) AS avg_steps_per_run
+      FROM runs r
+      LEFT JOIN steps_per_run sp ON sp.run_id = r.id
+    `;
+    const { rows: runKpis } = await query(runMetricsQuery, [fromDate]);
+
+    // 9. Bulk Verification Timing - Weekly throughput and average duration
+    const workflowThroughputQuery = `
+      WITH runs AS (
+        SELECT 
+          DATE_TRUNC('week', started_at) AS week_start,
+          EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - started_at)) AS duration_seconds
+        FROM workflow_runs
+        WHERE started_at >= $1
+      )
+      SELECT 
+        TO_CHAR(week_start, 'Week DD/MM') AS week_label,
+        COUNT(*) AS runs_count,
+        ROUND(AVG(duration_seconds)::numeric, 1) AS avg_run_duration_seconds
+      FROM runs
+      GROUP BY week_start
+      ORDER BY week_start ASC
+      LIMIT 12
+    `;
+    const { rows: workflowThroughput } = await query(workflowThroughputQuery, [fromDate]);
+
+    // 10. Bulk Verification Timing - Step-level metrics
+    const stepMetricsQuery = `
+      WITH steps AS (
+        SELECT 
+          wsr.step_key, wsr.name, wsr.status,
+          EXTRACT(EPOCH FROM (COALESCE(wsr.ended_at, NOW()) - wsr.started_at)) AS duration_seconds
+        FROM workflow_step_results wsr
+        JOIN workflow_runs wr ON wr.id = wsr.run_id
+        WHERE wr.started_at >= $1
+      )
+      SELECT 
+        step_key,
+        MAX(name) AS name,
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE status = 'pass') AS pass_count,
+        COUNT(*) FILTER (WHERE status = 'fail') AS fail_count,
+        ROUND(AVG(duration_seconds)::numeric, 1) AS avg_duration_seconds,
+        ROUND((PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_seconds))::numeric, 1) AS p95_duration_seconds
+      FROM steps
+      GROUP BY step_key
+      ORDER BY avg_duration_seconds DESC
+    `;
+    const { rows: stepMetrics } = await query(stepMetricsQuery, [fromDate]);
+
     return NextResponse.json({
       success: true,
       data: {
@@ -276,6 +347,12 @@ export async function GET(request: NextRequest) {
         complianceAlerts: complianceAlerts || [],
         complianceTrends: complianceTrends || [],
         documentStatus: documentStatus || [],
+        // New bulk verification timing analytics
+        workflowTiming: {
+          kpis: runKpis?.[0] || {},
+          throughput: workflowThroughput || [],
+          steps: stepMetrics || []
+        },
         timeRange,
         generatedAt: new Date().toISOString()
       }

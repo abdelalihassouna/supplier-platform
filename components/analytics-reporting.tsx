@@ -54,6 +54,29 @@ interface AnalyticsData {
   documentStatus: any[];
   timeRange: string;
   generatedAt: string;
+  workflowTiming?: {
+    kpis: {
+      total_runs: number;
+      completed_runs: number;
+      avg_run_duration_seconds: number;
+      p95_run_duration_seconds: number;
+      avg_steps_per_run: number;
+    };
+    throughput: Array<{
+      week_label: string;
+      runs_count: number;
+      avg_run_duration_seconds: number;
+    }>;
+    steps: Array<{
+      step_key: string;
+      name: string;
+      total: number;
+      pass_count: number;
+      fail_count: number;
+      avg_duration_seconds: number;
+      p95_duration_seconds: number;
+    }>;
+  };
 }
 
 // Default/loading data
@@ -94,40 +117,10 @@ const certificationTypes = [
 
 // Mock data for fallback
 const fallbackProcessingEfficiency = [
-  { week: "Week 1", ocr_success_rate: 85, ai_verification_rate: 78, avg_ocr_time_seconds: 12.3 },
-  { week: "Week 2", ocr_success_rate: 88, ai_verification_rate: 82, avg_ocr_time_seconds: 11.8 },
-  { week: "Week 3", ocr_success_rate: 91, ai_verification_rate: 85, avg_ocr_time_seconds: 10.5 },
-  { week: "Week 4", ocr_success_rate: 89, ai_verification_rate: 83, avg_ocr_time_seconds: 11.2 },
-]
-
-const complianceAlerts = [
-  {
-    id: "alert-001",
-    type: "document_expiring",
-    severity: "high",
-    title: "67 DURC Certificates Expiring",
-    description: "67 DURC certificates will expire within 30 days",
-    affectedSuppliers: 67,
-    dueDate: "2024-02-15T00:00:00Z",
-  },
-  {
-    id: "alert-002",
-    type: "regulatory_change",
-    severity: "medium",
-    title: "New ISO 9001:2024 Standard",
-    description: "New ISO 9001:2024 standard requirements effective March 2024",
-    affectedSuppliers: 892,
-    dueDate: "2024-03-01T00:00:00Z",
-  },
-  {
-    id: "alert-003",
-    type: "compliance_issue",
-    severity: "high",
-    title: "SOA Certification Gaps",
-    description: "52 suppliers have SOA certificates expiring soon",
-    affectedSuppliers: 52,
-    dueDate: "2024-01-31T00:00:00Z",
-  },
+  { week_label: "Week 1", ocr_success_rate: 85, ai_verification_rate: 78, avg_ocr_time_seconds: 12.3 },
+  { week_label: "Week 2", ocr_success_rate: 88, ai_verification_rate: 82, avg_ocr_time_seconds: 11.8 },
+  { week_label: "Week 3", ocr_success_rate: 91, ai_verification_rate: 85, avg_ocr_time_seconds: 10.5 },
+  { week_label: "Week 4", ocr_success_rate: 89, ai_verification_rate: 83, avg_ocr_time_seconds: 11.2 },
 ]
 
 const detailedReports = [
@@ -241,6 +234,16 @@ export function AnalyticsReporting() {
       month: "2-digit",
       year: "numeric",
     })
+  }
+
+  const formatSeconds = (seconds?: number) => {
+    if (seconds === undefined || seconds === null) return "-"
+    if (seconds < 1) return `${Math.round(seconds * 1000)}ms`
+    if (seconds < 10) return `${seconds.toFixed(1)}s`
+    if (seconds < 60) return `${Math.round(seconds)}s`
+    const m = Math.floor(seconds / 60)
+    const s = Math.round(seconds % 60)
+    return `${m}m ${s}s`
   }
 
   const getAlertColor = (severity: string) => {
@@ -369,7 +372,7 @@ export function AnalyticsReporting() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-muted-foreground">Avg Processing Time</p>
-                    <p className="text-2xl font-bold">{kpiData.avgProcessingTime.value} days</p>
+                    <p className="text-2xl font-bold">{formatSeconds(kpiData.avgProcessingTime.value)}</p>
                     <div className="flex items-center mt-1">
                       {getTrendIcon(kpiData.avgProcessingTime.trend, kpiData.avgProcessingTime.change)}
                       <span className={cn("text-sm ml-1", getTrendColor(kpiData.avgProcessingTime.trend))}>
@@ -565,7 +568,7 @@ export function AnalyticsReporting() {
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-sm text-muted-foreground">Avg Processing Time</p>
-                        <p className="text-2xl font-bold">{analyticsData?.kpis?.avg_ocr_time_seconds || 0}s</p>
+                        <p className="text-2xl font-bold">{formatSeconds(analyticsData?.kpis?.avg_ocr_time_seconds)}</p>
                         <div className="flex items-center mt-1">
                           <Clock className="w-4 h-4 text-primary" />
                           <span className="text-sm ml-1 text-muted-foreground">Per document</span>
@@ -576,7 +579,6 @@ export function AnalyticsReporting() {
                   </CardContent>
                 </Card>
               </div>
-
               {/* Processing Efficiency Chart */}
               <Card>
                 <CardHeader>
@@ -610,6 +612,135 @@ export function AnalyticsReporting() {
                       />
                     </LineChart>
                   </ResponsiveContainer>
+                </CardContent>
+              </Card>
+
+              {/* Bulk Verification Timing */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Total Runs</p>
+                        <p className="text-2xl font-bold">{analyticsData?.workflowTiming?.kpis?.total_runs || 0}</p>
+                      </div>
+                      <BarChart3 className="w-8 h-8 text-primary" />
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Completed Runs</p>
+                        <p className="text-2xl font-bold">{analyticsData?.workflowTiming?.kpis?.completed_runs || 0}</p>
+                      </div>
+                      <CheckCircle className="w-8 h-8 text-green-600" />
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Avg Run Duration</p>
+                        <p className="text-2xl font-bold">{formatSeconds(analyticsData?.workflowTiming?.kpis?.avg_run_duration_seconds)}</p>
+                      </div>
+                      <Clock className="w-8 h-8 text-primary" />
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">P95 Run Duration</p>
+                        <p className="text-2xl font-bold">{formatSeconds(analyticsData?.workflowTiming?.kpis?.p95_run_duration_seconds)}</p>
+                      </div>
+                      <Clock className="w-8 h-8 text-muted-foreground" />
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Avg Steps / Run</p>
+                        <p className="text-2xl font-bold">{analyticsData?.workflowTiming?.kpis?.avg_steps_per_run || 0}</p>
+                      </div>
+                      <Target className="w-8 h-8 text-primary" />
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Workflow Throughput & Duration */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center">
+                    <Zap className="w-5 h-5 mr-2" />
+                    Bulk Workflow Throughput
+                  </CardTitle>
+                  <CardDescription>Runs per week and average duration</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={analyticsData?.workflowTiming?.throughput || []}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="week_label" />
+                      <YAxis yAxisId="left" orientation="left" />
+                      <YAxis yAxisId="right" orientation="right" />
+                      <Tooltip formatter={(value: number, name: string, entry: any) => {
+                        const key = entry?.dataKey || name
+                        const isDuration = key === 'avg_run_duration_seconds' || name === 'Avg Duration'
+                        return isDuration ? [formatSeconds(value), 'Avg Duration'] : [value, 'Runs']
+                      }} />
+                      <Legend />
+                      <Line yAxisId="left" type="monotone" dataKey="runs_count" stroke="#3b82f6" strokeWidth={3} name="Runs" />
+                      <Line yAxisId="right" type="monotone" dataKey="avg_run_duration_seconds" stroke="#10b981" strokeWidth={3} name="Avg Duration" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+
+              {/* Step Timing Metrics */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Step Timing Metrics</CardTitle>
+                  <CardDescription>Average and P95 duration per step</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left p-2">Step</th>
+                          <th className="text-left p-2">Total</th>
+                          <th className="text-left p-2">Pass</th>
+                          <th className="text-left p-2">Fail</th>
+                          <th className="text-left p-2">Avg</th>
+                          <th className="text-left p-2">P95</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(analyticsData?.workflowTiming?.steps || []).map((s: any, idx: number) => (
+                          <tr key={idx} className="border-b">
+                            <td className="p-2 font-medium">{s.name || s.step_key}</td>
+                            <td className="p-2">{s.total}</td>
+                            <td className="p-2 text-green-600">{s.pass_count}</td>
+                            <td className="p-2 text-red-600">{s.fail_count}</td>
+                            <td className="p-2">{formatSeconds(s.avg_duration_seconds)}</td>
+                            <td className="p-2">{formatSeconds(s.p95_duration_seconds)}</td>
+                          </tr>
+                        ))}
+                        {(!analyticsData?.workflowTiming?.steps || analyticsData.workflowTiming.steps.length === 0) && (
+                          <tr>
+                            <td className="p-4 text-center text-muted-foreground" colSpan={6}>No workflow step data available</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </CardContent>
               </Card>
 
@@ -754,7 +885,7 @@ export function AnalyticsReporting() {
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold text-green-600">
-                  {analyticsData?.complianceTrends?.[analyticsData.complianceTrends.length - 1]?.overall_compliance || 0}%
+                  {analyticsData?.complianceTrends?.at(-1)?.overall_compliance || 0}%
                 </div>
                 <p className="text-xs text-muted-foreground">Current month average</p>
               </CardContent>
