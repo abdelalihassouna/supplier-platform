@@ -169,7 +169,7 @@ class SOAVerificationStrategy extends DocumentVerificationStrategy {
       { field: 'codice_fiscale', rule: 'exact_match', threshold: 100, required: true },
       { field: 'categorie', rule: 'fuzzy_match', threshold: 90, required: true },
       { field: 'data_scadenza_validita_triennale', rule: 'date_validation', threshold: 100, required: true },
-      { field: 'data_scadenza_validita_quinquennale', rule: 'date_validation', threshold: 100, required: false }
+      { field: 'data_scadenza_validita_quinquennale', rule: 'date_validation', threshold: 100, required: true }
     ]
   }
 
@@ -199,17 +199,16 @@ class SOAVerificationStrategy extends DocumentVerificationStrategy {
       }
     }
     
-    // Check attestation entity
+    // Attestation entity: presence-only (non-critical)
     if (ocrData.ente_attestazione) {
-      const knownEntities = ['SOA', 'ATTESTAZIONE', 'ORGANISMI']
-      const hasValidEntity = knownEntities.some(entity => 
-        ocrData.ente_attestazione.toUpperCase().includes(entity)
-      )
-      validations.push({
-        field: 'ente_attestazione',
-        status: hasValidEntity ? 'match' : 'mismatch',
-        notes: hasValidEntity ? 'Valid attestation entity' : 'Check attestation entity validity'
-      })
+      const value = String(ocrData.ente_attestazione).trim()
+      if (value.length > 0) {
+        validations.push({
+          field: 'ente_attestazione',
+          status: 'match',
+          notes: 'Attestation entity present'
+        })
+      }
     }
     
     return validations
@@ -934,36 +933,66 @@ Return JSON: {"match": boolean, "reason": "brief explanation"}`
       return { score: 0, status: 'invalid', notes: 'Date value is missing' }
     }
     
-    // Parse various date formats
+    // Parse various date formats: DD/MM/YYYY, DD.MM.YYYY, DD-MM-YYYY, and YYYY-MM-DD
+    // Normalize separators to '/'
+    const raw = String(value).trim()
+    const normalized = raw.replace(/[.\-]/g, '/').replace(/\s+/g, '/')
+
     let date: Date | null = null
-    
-    // Try DD/MM/YYYY format
-    const ddmmyyyyRegex = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
-    const ddmmyyyyMatch = value.match(ddmmyyyyRegex)
-    if (ddmmyyyyMatch) {
-      const [, day, month, year] = ddmmyyyyMatch
-      date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day))
+    let day: number | null = null
+    let month: number | null = null
+    let year: number | null = null
+
+    // Prefer DD/MM/YYYY when ambiguous
+    let m = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+    if (m) {
+      day = parseInt(m[1], 10)
+      month = parseInt(m[2], 10)
+      year = parseInt(m[3], 10)
+    } else {
+      // Try YYYY/MM/DD
+      m = normalized.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/)
+      if (m) {
+        year = parseInt(m[1], 10)
+        month = parseInt(m[2], 10)
+        day = parseInt(m[3], 10)
+      }
     }
-    
-    // Try D/M/YYYY format
-    const dmyyyyRegex = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
-    if (!date && dmyyyyRegex.test(value)) {
-      const [day, month, year] = value.split('/').map(Number)
-      date = new Date(year, month - 1, day)
-    }
-    
-    if (!date || isNaN(date.getTime())) {
+
+    if (day == null || month == null || year == null) {
       return { score: 0, status: 'invalid', notes: 'Invalid date format' }
     }
-    
+
+    // Basic range checks
+    if (month < 1 || month > 12 || day < 1 || day > 31 || year < 1900 || year > 2100) {
+      return { score: 0, status: 'invalid', notes: 'Invalid date format' }
+    }
+
+    date = new Date(year, month - 1, day)
+    // Verify constructed date matches components (catches 31/02 etc.)
+    if (
+      isNaN(date.getTime()) ||
+      date.getFullYear() !== year ||
+      date.getMonth() !== month - 1 ||
+      date.getDate() !== day
+    ) {
+      return { score: 0, status: 'invalid', notes: 'Invalid date format' }
+    }
+
     const today = new Date()
     today.setHours(0, 0, 0, 0)
-    
+
+    // Build canonical display format DD/MM/YYYY
+    const dd = String(day).padStart(2, '0')
+    const mm = String(month).padStart(2, '0')
+    const yyyy = String(year)
+    const display = `${dd}/${mm}/${yyyy}`
+
     if (date < today) {
-      return { score: 0, status: 'mismatch', notes: `Document expired on ${value}` }
+      return { score: 0, status: 'mismatch', notes: `Document expired on ${display}` }
     }
-    
-    return { score: 100, status: 'match', notes: `Valid until ${value}` }
+
+    return { score: 100, status: 'match', notes: `Valid until ${display}` }
   }
 
   private dateValidation(value: string | null): number {

@@ -145,7 +145,7 @@ export class SystemSettingsManager {
   static async getMistralApiKey(): Promise<string | null> {
     // First try system_settings, then fallback to environment variable
     const dbKey = await this.getSetting<string>('mistral_api_key');
-    console.log('Mistral API Key from DB:', dbKey);
+    // Do not log API keys or sensitive credentials
     if (dbKey) return dbKey;
     
     return process.env.MISTRAL_API_KEY || null;

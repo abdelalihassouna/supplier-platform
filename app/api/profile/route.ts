@@ -54,7 +54,12 @@ export async function GET() {
       joinDate: user.created_at,
     }
 
-    return NextResponse.json(profile)
+    return NextResponse.json(profile, {
+      headers: {
+        "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
+        "Vary": "Cookie",
+      },
+    })
   } catch (error) {
     console.error("Error fetching profile:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })

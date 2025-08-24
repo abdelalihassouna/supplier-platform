@@ -43,11 +43,45 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     let attachments: any[] = []
     try {
       const ares = await query(
-        `SELECT id, file_id, secure_token, filename, original_filename, question_code, cert_type,
-                content_type, file_size, download_status, download_error, downloaded_at, created_at
-         FROM supplier_attachments 
-         WHERE supplier_id = $1::uuid 
-         ORDER BY cert_type, filename`,
+        `SELECT 
+            sa.id,
+            sa.file_id,
+            sa.secure_token,
+            sa.filename,
+            sa.original_filename,
+            sa.question_code,
+            sa.cert_type,
+            sa.content_type,
+            sa.file_size,
+            sa.download_status,
+            sa.download_error,
+            sa.downloaded_at,
+            sa.analysis_status,
+            sa.created_at,
+            -- Latest analysis id for this attachment
+            (
+              SELECT da.id 
+              FROM document_analysis da 
+              WHERE da.attachment_id = sa.id 
+              ORDER BY da.created_at DESC 
+              LIMIT 1
+            ) AS analysis_id,
+            -- Latest verification confidence for that analysis
+            (
+              SELECT dv.confidence_score 
+              FROM document_verification dv 
+              WHERE dv.analysis_id = (
+                SELECT da2.id FROM document_analysis da2 
+                WHERE da2.attachment_id = sa.id 
+                ORDER BY da2.created_at DESC 
+                LIMIT 1
+              )
+              ORDER BY dv.created_at DESC 
+              LIMIT 1
+            ) AS confidence_score
+         FROM supplier_attachments sa
+         WHERE sa.supplier_id = $1::uuid 
+         ORDER BY sa.cert_type, sa.filename`,
         [supplier.id],
       )
       attachments = ares.rows
@@ -62,6 +96,11 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
         debasic_answers: debasicAnswers,
         attachments: attachments
       } 
+    }, {
+      headers: {
+        "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
+        "Vary": "Cookie",
+      },
     })
   } catch (err) {
     console.error("GET /api/suppliers/[id] error:", err)

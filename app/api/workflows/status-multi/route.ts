@@ -3,7 +3,9 @@ import { db } from '@/lib/database/postgresql'
 
 export async function POST(request: NextRequest) {
   try {
-    const { supplierIds }: { supplierIds: string[] } = await request.json()
+    const body = await request.json()
+    const supplierIds: string[] = body?.supplierIds
+    const includeSteps: boolean = body?.includeSteps !== false // default true
 
     if (!Array.isArray(supplierIds) || supplierIds.length === 0) {
       return NextResponse.json(
@@ -12,30 +14,54 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const results: Record<string, any> = {}
+    // 1) Fetch latest workflow_run per supplier in one query using window function
+    const runsQuery = `
+      WITH ranked_runs AS (
+        SELECT
+          wr.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY wr.supplier_id
+            ORDER BY (wr.workflow_type = 'Q1_single_step') ASC, wr.created_at DESC
+          ) AS rn
+        FROM workflow_runs wr
+        WHERE wr.supplier_id = ANY($1::uuid[]) 
+          AND wr.workflow_type IN ('Q1_supplier_qualification', 'Q1_single_step')
+      )
+      SELECT 
+        id, supplier_id, workflow_type, status, overall, notes, started_at, ended_at
+      FROM ranked_runs
+      WHERE rn = 1
+    `
 
-    await Promise.all(
-      supplierIds.map(async (supplierId) => {
-        try {
-          const runRes = await db.query(
-            `SELECT * FROM workflow_runs 
-             WHERE supplier_id = $1 AND workflow_type IN ('Q1_supplier_qualification', 'Q1_single_step')
-             ORDER BY (workflow_type = 'Q1_single_step') ASC, created_at DESC
-             LIMIT 1`,
-            [supplierId]
-          )
-          const workflowRun = runRes.rows[0]
-          if (!workflowRun) {
-            results[supplierId] = { workflowRun: null }
-            return
-          }
+    const runsRes = await db.query(runsQuery, [supplierIds])
+    const latestRuns = runsRes.rows as Array<{
+      id: string
+      supplier_id: string
+      workflow_type: string
+      status: string
+      overall: any
+      notes: any
+      started_at: string | null
+      ended_at: string | null
+    }>
 
-          const stepsRes = await db.query(
-            `SELECT * FROM workflow_step_results WHERE run_id = $1 ORDER BY order_index ASC`,
-            [workflowRun.id]
-          )
+    // Build a map supplierId -> run
+    const runBySupplier: Record<string, any> = {}
+    for (const sid of supplierIds) runBySupplier[sid] = null
+    for (const r of latestRuns) runBySupplier[r.supplier_id] = r
 
-          const steps = stepsRes.rows.map((step) => ({
+    // 2) Optionally fetch steps for all runs in one query
+    let stepsByRun: Record<string, any[]> = {}
+    if (includeSteps) {
+      const runIds = latestRuns.map((r) => r.id)
+      if (runIds.length > 0) {
+        const stepsRes = await db.query(
+          `SELECT * FROM workflow_step_results WHERE run_id = ANY($1::uuid[]) ORDER BY run_id ASC, order_index ASC`,
+          [runIds]
+        )
+        stepsByRun = stepsRes.rows.reduce<Record<string, any[]>>((acc, step) => {
+          const list = acc[step.run_id] || (acc[step.run_id] = [])
+          list.push({
             id: step.id,
             step_key: step.step_key,
             name: step.name,
@@ -46,27 +72,34 @@ export async function POST(request: NextRequest) {
             order_index: step.order_index,
             started_at: step.started_at,
             ended_at: step.ended_at,
-          }))
+          })
+          return acc
+        }, {})
+      }
+    }
 
-          results[supplierId] = {
-            workflowRun: {
-              id: workflowRun.id,
-              supplier_id: workflowRun.supplier_id,
-              workflow_type: workflowRun.workflow_type,
-              status: workflowRun.status,
-              overall: workflowRun.overall,
-              notes: workflowRun.notes || [],
-              steps,
-              started_at: workflowRun.started_at,
-              ended_at: workflowRun.ended_at,
-            },
-          }
-        } catch (e) {
-          console.error('[API /workflows/status-multi] Error for supplier:', supplierId, e)
-          results[supplierId] = { workflowRun: null, error: 'Failed to fetch status' }
-        }
-      })
-    )
+    // 3) Assemble response per supplier
+    const results: Record<string, any> = {}
+    for (const supplierId of supplierIds) {
+      const workflowRun = runBySupplier[supplierId]
+      if (!workflowRun) {
+        results[supplierId] = { workflowRun: null }
+        continue
+      }
+      results[supplierId] = {
+        workflowRun: {
+          id: workflowRun.id,
+          supplier_id: workflowRun.supplier_id,
+          workflow_type: workflowRun.workflow_type,
+          status: workflowRun.status,
+          overall: workflowRun.overall,
+          notes: workflowRun.notes || [],
+          steps: includeSteps ? (stepsByRun[workflowRun.id] || []) : [],
+          started_at: workflowRun.started_at,
+          ended_at: workflowRun.ended_at,
+        },
+      }
+    }
 
     return NextResponse.json({ results })
   } catch (error) {

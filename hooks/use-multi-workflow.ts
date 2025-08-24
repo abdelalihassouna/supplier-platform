@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { type WorkflowRunResult, type Q1WorkflowOptions } from '@/lib/workflows/q1-orchestrator'
 
 export interface UseMultiWorkflowProps {
@@ -29,10 +29,13 @@ export function useMultiWorkflow({
   })
 
   const hasSuppliers = Array.isArray(supplierIds) && supplierIds.length > 0
+  const inFlight = useRef(false)
 
   // Fetch workflow statuses for all suppliers
   const fetchStatuses = useCallback(async () => {
     if (!hasSuppliers) return null
+    if (inFlight.current) return null
+    inFlight.current = true
     try {
       const response = await fetch('/api/workflows/status-multi', {
         method: 'POST',
@@ -70,6 +73,8 @@ export function useMultiWorkflow({
         isLoading: false,
       }))
       return null
+    } finally {
+      inFlight.current = false
     }
   }, [supplierIds, hasSuppliers])
 
@@ -126,15 +131,32 @@ export function useMultiWorkflow({
     setState({ runs: {}, isLoading: false, isRunning: false, errors: {} })
   }, [])
 
-  // Auto refresh when running
+  // Auto refresh when running (skip when tab hidden) and refresh on visibility change
   useEffect(() => {
     if (!autoRefresh || !state.isRunning || !hasSuppliers) return
 
-    const interval = setInterval(() => {
+    const tick = () => {
+      if (typeof document !== 'undefined' && document.hidden) return
       fetchStatuses()
-    }, refreshInterval)
+    }
 
-    return () => clearInterval(interval)
+    const interval = setInterval(tick, refreshInterval)
+
+    const onVisibility = () => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        fetchStatuses()
+      }
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibility)
+    }
+
+    return () => {
+      clearInterval(interval)
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibility)
+      }
+    }
   }, [autoRefresh, state.isRunning, refreshInterval, fetchStatuses, hasSuppliers])
 
   // Initial fetch when suppliers change

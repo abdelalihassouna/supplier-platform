@@ -3,6 +3,7 @@ import { MistralDocumentClient } from '@/lib/mistral-client';
 import { DocumentType, DocumentTypeDetector, DOCUMENT_TYPES, DocumentValidators } from '@/lib/document-schemas';
 import { query } from '@/lib/db';
 import { AIVerificationService } from '@/lib/ai-verification-service';
+import { SystemSettingsManager } from '@/lib/system-settings';
 
 export async function POST(request: NextRequest) {
   try {
@@ -10,6 +11,9 @@ export async function POST(request: NextRequest) {
     // Parse request body
     const body = await request.json();
     const { attachmentId, docType, pages } = body;
+    // Optional toggles for verification deferral/override
+    const deferVerification: boolean = Boolean(body?.deferVerification);
+    const autoVerifyOverride: boolean | undefined = typeof body?.autoVerify === 'boolean' ? body.autoVerify : undefined;
 
     if (!attachmentId) {
       return NextResponse.json({ error: 'Attachment ID is required' }, { status: 400 });
@@ -196,9 +200,11 @@ export async function POST(request: NextRequest) {
         [attachmentId]
       );
 
-      // Trigger automatic AI verification for supported document types
+      // Determine if we should auto-trigger AI verification
       const supportedVerificationTypes: DocumentType[] = ['DURC', 'VISURA', 'SOA', 'ISO', 'CCIAA'];
-      if (supportedVerificationTypes.includes(detectedDocType)) {
+      const settingAuto = await SystemSettingsManager.getSetting<boolean>('auto_verification_enabled');
+      const shouldAutoVerify = autoVerifyOverride ?? (typeof settingAuto === 'boolean' ? settingAuto : true);
+      if (!deferVerification && shouldAutoVerify && supportedVerificationTypes.includes(detectedDocType)) {
         try {
           console.log(`Triggering automatic AI verification for ${detectedDocType} document (analysis ID: ${analysisId})`);
           const aiService = new AIVerificationService();
@@ -209,6 +215,8 @@ export async function POST(request: NextRequest) {
           // Don't fail the entire request if AI verification fails
           // The OCR analysis was successful, so we still return success
         }
+      } else {
+        console.log(`Auto AI verification skipped for analysis ID ${analysisId} (defer=${deferVerification}, setting=${settingAuto}, override=${autoVerifyOverride})`)
       }
 
       return NextResponse.json({

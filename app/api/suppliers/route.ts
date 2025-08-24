@@ -88,7 +88,12 @@ export async function GET(request: NextRequest) {
           total_suppliers: total,
         },
       }
-      return NextResponse.json(response)
+      return NextResponse.json(response, {
+        headers: {
+          "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
+          "Vary": "Cookie",
+        },
+      })
     }
 
     // Unreachable: always PostgreSQL

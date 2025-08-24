@@ -4,6 +4,15 @@ import { NextResponse } from "next/server"
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
+  // Allow Next internals, favicon, and any request for a static file (has an extension)
+  if (
+    pathname.startsWith("/_next") ||
+    pathname.startsWith("/favicon.ico") ||
+    /\.[a-zA-Z0-9]+$/.test(pathname)
+  ) {
+    return NextResponse.next()
+  }
+
   // Public routes that don't require authentication
   const publicRoutes = [
     "/auth/login",
@@ -46,6 +55,6 @@ export const config = {
      * - favicon.ico (favicon file)
      * - api routes (handled separately)
      */
-    "/((?!_next/static|_next/image|favicon.ico|api/).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/|.*\..*).*)",
   ],
 }

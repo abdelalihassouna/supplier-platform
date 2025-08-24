@@ -29,9 +29,17 @@ export interface WorkflowRunResult {
   ended_at?: string
 }
 
+// Minimal shape for comparisons returned by AI verification
+interface FieldComparison {
+  field_name: string
+  status: 'match' | 'mismatch' | 'missing' | 'invalid' | string
+  notes?: string
+}
+
 export interface Q1WorkflowOptions {
   includeSOA?: boolean
   includeWhiteList?: boolean
+  includeCCIAA?: boolean
   triggeredBy?: string
 }
 
@@ -50,11 +58,111 @@ export class Q1WorkflowOrchestrator {
     } finally {
       if (timer) clearTimeout(timer)
     }
+
+  }
+
+  private async checkCCIAA(supplierId: string) {
+    const analysisRes = await db.query(
+      `SELECT * FROM document_analysis 
+       WHERE supplier_id = $1 AND doc_type = 'CCIAA'
+       ORDER BY created_at DESC LIMIT 1`,
+      [supplierId]
+    )
+    const analysis = analysisRes.rows[0]
+
+    if (!analysis) {
+      return { status: 'skip' as const, issues: ['No CCIAA document found'] }
+    }
+
+    try {
+      const verification = await this.verifyWithDedup(
+        analysis.id,
+        'CCIAA',
+        supplierId,
+        `CCIAA verification supplier=${supplierId}`
+      )
+
+      const issues: string[] = []
+
+      if (verification.field_comparisons) {
+        const fieldComparisons: FieldComparison[] = verification.field_comparisons as FieldComparison[]
+        for (const comp of fieldComparisons) {
+          if (comp.status === 'mismatch' || comp.status === 'invalid' || comp.status === 'missing') {
+            issues.push(`CCIAA field ${comp.field_name}: ${comp.status}${comp.notes ? ' - ' + comp.notes : ''}`)
+          }
+        }
+      }
+
+      return {
+        status: issues.length === 0 ? 'pass' as const : 'fail' as const,
+        issues,
+        details: { verification_result: verification },
+        score: verification.confidence_score,
+      }
+
+    } catch (error) {
+      return {
+        status: 'fail' as const,
+        issues: [`CCIAA verification failed: ${error instanceof Error ? error.message : 'Unknown error'}`],
+      }
+    }
   }
 
   private async isRunCanceled(runId: string): Promise<boolean> {
     const res = await db.query('SELECT status FROM workflow_runs WHERE id = $1', [runId])
     return res.rows[0]?.status === 'canceled'
+  }
+
+  // Try to reuse an existing verification result for the given analysis
+  private async getExistingVerification(analysisId: string): Promise<any | null> {
+    try {
+      const res = await db.query(
+        `SELECT verification_status, verification_result, confidence_score, field_comparisons, discrepancies, ai_analysis
+         FROM document_verification
+         WHERE analysis_id = $1
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [analysisId]
+      )
+      const row = res.rows?.[0]
+      if (!row) return null
+      if (row.verification_status && row.verification_status !== 'completed') {
+        // Only treat completed results as reusable
+        return null
+      }
+      return {
+        overall_result: row.verification_result,
+        confidence_score: typeof row.confidence_score === 'string' ? Number.parseFloat(row.confidence_score) : row.confidence_score,
+        field_comparisons: row.field_comparisons,
+        discrepancies: row.discrepancies,
+        ai_analysis: row.ai_analysis,
+      }
+    } catch (e) {
+      console.warn('[workflow] getExistingVerification failed', e)
+      return null
+    }
+  }
+
+  // Deduplicate verification calls by first checking for an existing completed record
+  private async verifyWithDedup(
+    analysisId: string,
+    docType: 'DURC' | 'VISURA' | 'SOA' | 'ISO' | 'CCIAA',
+    supplierId: string,
+    context: string
+  ): Promise<any> {
+    const existing = await this.getExistingVerification(analysisId)
+    if (existing) {
+      console.log(`[verification] Reusing existing ${docType} verification analysisId=${analysisId} supplier=${supplierId}`)
+      return existing
+    }
+    console.log(`[verification] ${docType} verify start analysisId=${analysisId} supplier=${supplierId}`)
+    const result = await this.withTimeout(
+      this.aiService.verifyDocument(analysisId, docType as any),
+      STEP_TIMEOUT_MS,
+      context
+    )
+    console.log(`[verification] ${docType} verify end analysisId=${analysisId} supplier=${supplierId}`)
+    return result
   }
 
   private getStepDefinition(stepKey: string): { key: string; name: string; order: number } {
@@ -69,6 +177,8 @@ export class Q1WorkflowOrchestrator {
         return { key: 'whitelist_insurance', name: 'White List & Insurance', order: 4 }
       case 'visura':
         return { key: 'visura', name: 'Qualification Questionnaire (VISURA)', order: 5 }
+      case 'cciaa':
+        return { key: 'cciaa', name: 'CCIAA Verification', order: 6 }
       case 'certifications':
         return { key: 'certifications', name: 'Certifications Verification', order: 6 }
       case 'soa':
@@ -151,18 +261,33 @@ export class Q1WorkflowOrchestrator {
 
     try {
       console.log(`[workflow] Run start supplier=${supplierId} options=${JSON.stringify(options)}`)
-      // Define workflow steps
-      const stepDefinitions = [
-        { key: 'registration', name: 'Registration Check', order: 1 },
-        { key: 'preliminary', name: 'Preliminary Data Verification', order: 2 },
-        { key: 'durc', name: 'DURC Verification', order: 3 },
-        { key: 'whitelist_insurance', name: 'White List & Insurance', order: 4 },
-        { key: 'visura', name: 'Qualification Questionnaire (VISURA)', order: 5 },
-        { key: 'certifications', name: 'Certifications Verification', order: 6 },
-        ...(options.includeSOA ? [{ key: 'soa', name: 'SOA Verification', order: 7 }] : []),
-        { key: 'scorecard', name: 'Q1 Scorecard Generation', order: 8 },
-        { key: 'finalize', name: 'Final Outcome & Follow-up', order: 9 }
+      // Define workflow steps dynamically to maintain sequential ordering when optional steps are toggled
+      const baseSteps: Array<{ key: string; name: string }> = [
+        { key: 'registration', name: 'Registration Check' },
+        { key: 'preliminary', name: 'Preliminary Data Verification' },
+        { key: 'durc', name: 'DURC Verification' },
+        { key: 'whitelist_insurance', name: 'White List & Insurance' },
+        { key: 'visura', name: 'Qualification Questionnaire (VISURA)' },
       ]
+
+      // Optional CCIAA verification step
+      if (options.includeCCIAA) {
+        baseSteps.push({ key: 'cciaa', name: 'CCIAA Verification' })
+      }
+
+      // Certifications (ISO)
+      baseSteps.push({ key: 'certifications', name: 'Certifications Verification' })
+
+      // Optional SOA step
+      if (options.includeSOA) {
+        baseSteps.push({ key: 'soa', name: 'SOA Verification' })
+      }
+
+      // Final steps
+      baseSteps.push({ key: 'scorecard', name: 'Q1 Scorecard Generation' })
+      baseSteps.push({ key: 'finalize', name: 'Final Outcome & Follow-up' })
+
+      const stepDefinitions = baseSteps.map((s, idx) => ({ ...s, order: idx + 1 }))
 
       // Execute each step
       for (const stepDef of stepDefinitions) {
@@ -305,6 +430,9 @@ export class Q1WorkflowOrchestrator {
           break
         case 'visura':
           result = await this.checkVISURA(supplierId)
+          break
+        case 'cciaa':
+          result = await this.checkCCIAA(supplierId)
           break
         case 'certifications':
           result = await this.checkCertifications(supplierId)
@@ -478,17 +606,16 @@ export class Q1WorkflowOrchestrator {
     }
 
     try {
-      // Use AI verification service to validate DURC and compare fields
-      console.log(`[verification] DURC verify start analysisId=${analysis.id} supplier=${supplierId}`)
-      const verification = await this.withTimeout(
-        this.aiService.verifyDocument(analysis.id, 'DURC'),
-        STEP_TIMEOUT_MS,
+      // Use AI verification service with deduplication
+      const verification = await this.verifyWithDedup(
+        analysis.id,
+        'DURC',
+        supplierId,
         `DURC verification supplier=${supplierId}`
       )
-      console.log(`[verification] DURC verify end analysisId=${analysis.id} supplier=${supplierId}`)
 
       const issues: string[] = []
-      const comparisons = verification.field_comparisons || []
+      const comparisons: FieldComparison[] = (verification.field_comparisons || []) as FieldComparison[]
 
       // Collect mismatches, missing, and invalid fields with notes
       for (const comp of comparisons) {
@@ -499,8 +626,8 @@ export class Q1WorkflowOrchestrator {
       }
 
       // Explicit checks for DURC status and expiry
-      const statusComp = comparisons.find(c => c.field_name === 'risultato')
-      const expiryComp = comparisons.find(c => c.field_name === 'scadenza_validita')
+      const statusComp = comparisons.find((c: FieldComparison) => c.field_name === 'risultato')
+      const expiryComp = comparisons.find((c: FieldComparison) => c.field_name === 'scadenza_validita')
 
       const hasValidStatus = statusComp?.status === 'match'
       const notExpired = expiryComp?.status === 'match'
@@ -567,18 +694,18 @@ export class Q1WorkflowOrchestrator {
     }
 
     try {
-      console.log(`[verification] VISURA verify start analysisId=${analysis.id} supplier=${supplierId}`)
-      const verification = await this.withTimeout(
-        this.aiService.verifyDocument(analysis.id, 'VISURA'),
-        STEP_TIMEOUT_MS,
+      const verification = await this.verifyWithDedup(
+        analysis.id,
+        'VISURA',
+        supplierId,
         `VISURA verification supplier=${supplierId}`
       )
-      console.log(`[verification] VISURA verify end analysisId=${analysis.id} supplier=${supplierId}`)
       
       const issues: string[] = []
 
       if (verification.field_comparisons) {
-        for (const comparison of verification.field_comparisons) {
+        const fieldComparisons: FieldComparison[] = verification.field_comparisons as FieldComparison[]
+        for (const comparison of fieldComparisons) {
           if (comparison.status === 'mismatch') {
             issues.push(`VISURA field mismatch: ${comparison.field_name}`)
           }
@@ -586,7 +713,7 @@ export class Q1WorkflowOrchestrator {
       }
 
       // Check activity status
-      if (!verification.field_comparisons?.some(f => f.field_name === 'stato_attivita' && f.status === 'match')) {
+      if (!verification.field_comparisons?.some((f: FieldComparison) => f.field_name === 'stato_attivita' && f.status === 'match')) {
         issues.push('Company activity status not confirmed as active')
       }
 
@@ -624,17 +751,16 @@ export class Q1WorkflowOrchestrator {
 
     for (const cert of analysis) {
       try {
-        console.log(`[verification] ISO verify start analysisId=${cert.id} supplier=${supplierId}`)
-        const verification = await this.withTimeout(
-          this.aiService.verifyDocument(cert.id, 'ISO'),
-          STEP_TIMEOUT_MS,
+        const verification = await this.verifyWithDedup(
+          cert.id,
+          'ISO',
+          supplierId,
           `ISO verification ${cert.id} supplier=${supplierId}`
         )
-        console.log(`[verification] ISO verify end analysisId=${cert.id} supplier=${supplierId}`)
         if (typeof verification.confidence_score === 'number') {
           scores.push(verification.confidence_score)
         }
-        if (verification.field_comparisons?.some(c => c.status === 'mismatch')) {
+        if ((verification.field_comparisons as FieldComparison[] | undefined)?.some((c: FieldComparison) => c.status === 'mismatch')) {
           issues.push(`ISO certification ${cert.id}: field mismatches found`)
         } else {
           validCertifications++
@@ -667,16 +793,18 @@ export class Q1WorkflowOrchestrator {
     }
 
     try {
-      const verification = await this.withTimeout(
-        this.aiService.verifyDocument(analysis.id, 'SOA'),
-        STEP_TIMEOUT_MS,
+      const verification = await this.verifyWithDedup(
+        analysis.id,
+        'SOA',
+        supplierId,
         `SOA verification supplier=${supplierId}`
       )
       
       const issues: string[] = []
 
       if (verification.field_comparisons) {
-        for (const comparison of verification.field_comparisons) {
+        const fieldComparisons: FieldComparison[] = verification.field_comparisons as FieldComparison[]
+        for (const comparison of fieldComparisons) {
           if (comparison.status === 'mismatch') {
             issues.push(`SOA field mismatch: ${comparison.field_name}`)
           }

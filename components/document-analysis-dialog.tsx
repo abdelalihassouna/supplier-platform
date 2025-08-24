@@ -86,6 +86,9 @@ interface DocumentAnalysisDialogProps {
     cert_type?: string
     content_type?: string
     file_size?: number
+    // Optional fields enriched by supplier attachments API
+    analysis_id?: string
+    confidence_score?: number | string
   }
 
   supplierId?: string
@@ -123,6 +126,7 @@ export function DocumentAnalysisDialog({
   const [editedFields, setEditedFields] = useState<DocumentFields>({})
   const [validationNotes, setValidationNotes] = useState("")
   const [isValidating, setIsValidating] = useState(false)
+  const [verificationConfidence, setVerificationConfidence] = useState<number | null>(null)
 
   // Helpers to format telemetry values (handle string or number from API)
   const toNum = (v: any): number | null => {
@@ -159,6 +163,34 @@ export function DocumentAnalysisDialog({
       loadExistingAnalysis()
     }
   }, [open, attachment.id])
+
+  // Initialize badge from attachment's confidence if available
+  useEffect(() => {
+    if (!open) return
+    const initial = (attachment as any)?.confidence_score
+    setVerificationConfidence(initial !== undefined && initial !== null ? Number(initial) : null)
+  }, [open, attachment])
+
+  // Helper to fetch latest verification and update confidence
+  const fetchVerificationConfidence = async (analysisId: string) => {
+    try {
+      const res = await fetch(`/api/documents/verify?analysisId=${analysisId}`)
+      const data = await res.json()
+      if (res.ok && data.success) {
+        const score = Number(data.data?.confidence_score)
+        if (!Number.isNaN(score)) setVerificationConfidence(score)
+      }
+    } catch {
+      // noop
+    }
+  }
+
+  // When we know the analysis id, fetch verification to reflect latest confidence
+  useEffect(() => {
+    if (!open) return
+    const id = analysis?.id || (attachment as any)?.analysis_id
+    if (id) fetchVerificationConfidence(id)
+  }, [open, analysis?.id, attachment])
 
   // Reset state when dialog closes
   useEffect(() => {
@@ -330,6 +362,11 @@ export function DocumentAnalysisDialog({
           <DialogTitle className="flex items-center gap-2">
             <Brain className="w-5 h-5 text-primary" />
             Document Analysis
+            {verificationConfidence !== null && (
+              <Badge variant="outline" className="ml-1 text-xs">
+                {verificationConfidence.toFixed(2)}%
+              </Badge>
+            )}
           </DialogTitle>
           <DialogDescription>
             Analyze and extract structured data from {attachment.filename || attachment.original_filename}
@@ -515,8 +552,11 @@ export function DocumentAnalysisDialog({
                   // Optional: Show loading state
                 }}
                 onVerificationComplete={(result) => {
+                  // Update confidence badge with latest score
+                  const score = Number((result as any)?.confidence_score)
+                  if (!Number.isNaN(score)) setVerificationConfidence(score)
                   // Stay on verification tab after completion
-                  // onAnalysisComplete?.() - Removed to prevent dialog refresh
+                  // onAnalysisComplete?.() - kept disabled to prevent dialog refresh
                 }}
               />
             )}

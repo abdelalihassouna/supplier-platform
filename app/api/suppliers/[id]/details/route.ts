@@ -149,7 +149,12 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
         compliance_details: complianceStatus.required_certs,
       }
 
-      return NextResponse.json(supplierDetails)
+      return NextResponse.json(supplierDetails, {
+        headers: {
+          "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
+          "Vary": "Cookie",
+        },
+      })
     } catch (jaggaerError) {
       console.error("Jaggaer API error:", jaggaerError)
 
@@ -190,7 +195,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
             id: 1,
             supplier_id: supplierId,
             level: "ERROR",
-            message: `Failed to fetch from Jaggaer API: ${jaggaerError.message}`,
+            message: `Failed to fetch from Jaggaer API: ${jaggaerError instanceof Error ? jaggaerError.message : String(jaggaerError)}`,
             created_at: new Date().toISOString(),
           },
         ],
@@ -198,14 +203,19 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
         compliance_details: {},
       }
 
-      return NextResponse.json(mockSupplierDetails)
+      return NextResponse.json(mockSupplierDetails, {
+        headers: {
+          "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
+          "Vary": "Cookie",
+        },
+      })
     }
   } catch (error) {
     console.error("Error in supplier details API:", error)
     return NextResponse.json(
       {
         error: "Internal server error",
-        details: error.message,
+        details: error instanceof Error ? error.message : "Unknown error",
       },
       { status: 500 },
     )

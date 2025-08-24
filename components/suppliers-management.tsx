@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -130,6 +130,8 @@ export function SuppliersManagement() {
   const [isBulkStatusOpen, setBulkStatusOpen] = useState(false)
   const [stepFilters, setStepFilters] = useState({ hasFail: false, running: false, allPass: false })
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null)
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("")
+  const currentFetchController = useRef<AbortController | null>(null)
   const {
     runs: multiRuns,
     isLoading: multiLoading,
@@ -140,7 +142,11 @@ export function SuppliersManagement() {
     cancelWorkflows,
   } = useMultiWorkflow({ supplierIds: selectedSuppliers, autoRefresh: true, refreshInterval: 2000 })
 
-  const fetchSuppliers = async (page = 1, search = "", status = "") => {
+  // Track and poll workflow statuses for all suppliers visible on the current page
+  const visibleSupplierIds = useMemo(() => suppliers.map((s) => s.id), [suppliers])
+  const { runs: pageRuns, refreshStatuses: refreshPageStatuses } = useMultiWorkflow({ supplierIds: visibleSupplierIds, autoRefresh: true, refreshInterval: 2000 })
+
+  const fetchSuppliers = async (page = 1, search = "", status = "", signal?: AbortSignal) => {
     try {
       setLoading(true)
       setError(null)
@@ -152,7 +158,7 @@ export function SuppliersManagement() {
       if (search) params.append("search", search)
       if (status && status !== "all") params.append("status", status)
 
-      const response = await fetch(`/api/suppliers?${params}`)
+      const response = await fetch(`/api/suppliers?${params}`, { signal })
 
       if (!response.ok) {
         if (response.status === 401) {
@@ -167,6 +173,11 @@ export function SuppliersManagement() {
       setPagination(data.pagination)
       setSyncInfo(data.sync_info)
     } catch (error) {
+      // Ignore aborted requests during rapid typing
+      const isAbort =
+        (typeof DOMException !== 'undefined' && error instanceof DOMException && error.name === 'AbortError') ||
+        (error instanceof Error && error.name === 'AbortError')
+      if (isAbort) return
       console.error("Error fetching suppliers:", error)
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
       setError(errorMessage)
@@ -221,14 +232,36 @@ export function SuppliersManagement() {
     }
   }
 
+  // Debounce search input to avoid firing requests on every keystroke
   useEffect(() => {
-    fetchSuppliers(pagination.page, searchQuery, activeFilter)
-  }, [pagination.page, searchQuery, activeFilter])
+    const t = setTimeout(() => setDebouncedSearchQuery(searchQuery), 400)
+    return () => clearTimeout(t)
+  }, [searchQuery])
 
-  // Track last updated when workflow runs change
+  // Fetch suppliers with abortable requests and debounced search
+  useEffect(() => {
+    const controller = new AbortController()
+    // Cancel any in-flight request
+    if (currentFetchController.current) currentFetchController.current.abort()
+    currentFetchController.current = controller
+    fetchSuppliers(pagination.page, debouncedSearchQuery, activeFilter, controller.signal)
+    return () => controller.abort()
+  }, [pagination.page, debouncedSearchQuery, activeFilter])
+
+  // When multi (selected) runs start running, prime the page-scoped polling once
+  useEffect(() => {
+    // If any selected supplier is running but no visible supplier is marked running yet, refresh page statuses once
+    const anyRunningSelected = Object.values(multiRuns || {}).some((r: any) => r?.status === 'running')
+    const anyRunningVisible = visibleSupplierIds.some((id) => pageRuns?.[id]?.status === 'running')
+    if (selectedSuppliers.length > 0 && anyRunningSelected && !anyRunningVisible) {
+      refreshPageStatuses()
+    }
+  }, [multiRuns, selectedSuppliers, visibleSupplierIds, pageRuns, refreshPageStatuses])
+
+  // Track last updated when workflow runs change (selected or visible page)
   useEffect(() => {
     setLastUpdatedAt(Date.now())
-  }, [multiRuns])
+  }, [multiRuns, pageRuns])
 
   const totalCount = pagination.total
   const filterCounts = {
@@ -240,7 +273,7 @@ export function SuppliersManagement() {
 
   // Apply local step-based filters on the current page
   const filteredSuppliers = suppliers.filter((s) => {
-    const run = multiRuns[s.id]
+    const run = pageRuns[s.id] ?? multiRuns[s.id]
     if (stepFilters.running && run?.status !== 'running') return false
     if (stepFilters.hasFail) {
       const hasFail = Array.isArray(run?.steps) && run!.steps.some((st: any) => st?.status === 'fail')
@@ -674,7 +707,7 @@ export function SuppliersManagement() {
               </TableHeader>
               <TableBody>
                 {filteredSuppliers.map((supplier) => {
-                  const run = multiRuns[supplier.id]
+                  const run = pageRuns[supplier.id] ?? multiRuns[supplier.id]
                   return (
                     <TableRow key={supplier.id} className="hover:bg-muted/50">
                       <TableCell>

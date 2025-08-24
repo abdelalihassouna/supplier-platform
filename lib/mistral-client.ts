@@ -262,6 +262,8 @@ export class MistralDocumentClient {
     case 'png': return 'image/png';
     case 'tiff':
     case 'tif': return 'image/tiff';
+    case 'docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'doc': return 'application/msword';
     default: return 'application/octet-stream';
     }
   }

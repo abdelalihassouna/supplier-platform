@@ -58,6 +58,11 @@ export async function GET(
         validation: validationSummary,
         lastValidated: new Date().toISOString()
       }
+    }, {
+      headers: {
+        "Cache-Control": "private, max-age=20, stale-while-revalidate=60",
+        "Vary": "Cookie",
+      },
     });
 
   } catch (error) {

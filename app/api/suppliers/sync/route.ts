@@ -64,6 +64,9 @@ export async function POST(request: NextRequest) {
       let selectedComponents: string[] = []
       let batchSize = 100
       let maxTotal: number | undefined = undefined
+      // Concurrency defaults (can be overridden by settings)
+      let supplierConcurrency = Number.parseInt(process.env.SYNC_SUPPLIER_CONCURRENCY || '3') || 3
+      let attachmentConcurrency = Number.parseInt(process.env.SYNC_ATTACHMENT_CONCURRENCY || '2') || 2
       try {
         const { rows } = await query<{ setting_value: any }>(
           "SELECT setting_value FROM system_settings WHERE setting_key = $1 LIMIT 1",
@@ -77,6 +80,11 @@ export async function POST(request: NextRequest) {
         } else if (s.maxTotal) {
           maxTotal = Number.parseInt(String(s.maxTotal))
         }
+        if (s.supplierConcurrency) supplierConcurrency = Number.parseInt(String(s.supplierConcurrency)) || supplierConcurrency
+        if (s.attachmentConcurrency) attachmentConcurrency = Number.parseInt(String(s.attachmentConcurrency)) || attachmentConcurrency
+        // Clamp to safe ranges
+        supplierConcurrency = Math.max(1, Math.min(8, supplierConcurrency))
+        attachmentConcurrency = Math.max(1, Math.min(6, attachmentConcurrency))
       } catch (_) {
         // proceed with defaults
       }
@@ -154,11 +162,14 @@ export async function POST(request: NextRequest) {
            END IF;
          END $$;`
       )
+      // Fetch profiles and time the call
+      const fetchStart = Date.now()
       const profiles = await api.getAllCompanyProfiles({
         components: selectedComponents.length ? selectedComponents : undefined,
         batchSize,
         maxTotal,
       })
+      const fetchProfilesMs = Date.now() - fetchStart
 
       // Map to supplier rows expected by upsert logic, aligned with provided basic info fields
       const jaggaerSuppliers = profiles.map((p: any) => {
@@ -200,9 +211,36 @@ export async function POST(request: NextRequest) {
         }
       })
 
+      // Metrics counters
+      let supplierUpsertsMs = 0
+      let debasicUpsertsMs = 0
+      let attachmentsProcessingMs = 0
+
+      let attachmentsAllowed = 0
+      let attachmentsDownloaded = 0
+      let attachmentsFailed = 0
+      let attachmentsSkippedExisting = 0
+      let analysisEnqueued = 0
+      let analysisTriggeredImmediate = 0
+
       let suppliersCreated = 0
       let suppliersUpdated = 0
       let suppliersFailed = 0
+
+      // Simple concurrency runner
+      async function runWithConcurrency<T>(items: T[], limit: number, fn: (item: T, index: number) => Promise<void>) {
+        if (!Number.isFinite(limit) || limit < 1) limit = 1
+        let cursor = 0
+        const size = Math.min(items.length, limit)
+        const workers = Array.from({ length: size }, async () => {
+          while (true) {
+            const idx = cursor++
+            if (idx >= items.length) break
+            await fn(items[idx], idx)
+          }
+        })
+        await Promise.all(workers)
+      }
 
       // Target keys for deBasic answers (supports wildcard suffix *)
       const targetKeys = [
@@ -296,14 +334,15 @@ export async function POST(request: NextRequest) {
         return out
       }
 
-      // Process each supplier (keep index to access original profile for deBasic answers)
-      for (let i = 0; i < jaggaerSuppliers.length; i++) {
+      // Process suppliers with controlled concurrency (keep index to access original profile)
+      await runWithConcurrency(jaggaerSuppliers, supplierConcurrency, async (_unused, i) => {
         const supplierData = jaggaerSuppliers[i]
         try {
           // Extract debasic answers and reduce to requested keys
           const allAnswers = api.extractDebasicAnswers(profiles[i])
           const filteredAnswers = filterDebasicAnswers(allAnswers)
           // Try update by bravo_id
+          const upsertStart = Date.now()
           const updateRes = await query(
           `UPDATE suppliers SET 
              company_name = COALESCE($1, company_name),
@@ -384,8 +423,12 @@ export async function POST(request: NextRequest) {
           supplierId = insertRes.rows[0]?.id
         }
 
+        // Record time spent on supplier upsert
+        supplierUpsertsMs += Date.now() - upsertStart
+
         // Upsert filtered deBasic answers for this supplier
         if (supplierId) {
+          const answersStart = Date.now()
           await query(
             `INSERT INTO supplier_debasic_answers (supplier_id, answers, updated_at)
              VALUES ($1, $2::jsonb, NOW())
@@ -394,47 +437,48 @@ export async function POST(request: NextRequest) {
                updated_at = NOW()`,
             [supplierId, JSON.stringify(filteredAnswers)],
           )
+          debasicUpsertsMs += Date.now() - answersStart
         }
 
         // Extract and download attachments for this supplier
         if (supplierId) {
           try {
             const certifications = api.extractCertifications(profiles[i])
-            
+
             // Filter for only required document types
             const allowedQuestionCodes = [
               'Q1_CCIAA_ALLEGATO',
               'Q0_DURC_ALLEGATO',
               'Q1_ALLEGATO_SOA'
             ]
-            
+
+            // Partition certifications into allowed for download
+            const allowedForDownload: any[] = []
             for (const cert of certifications) {
               const { file_id, secure_token, filename } = cert.values
-              
-              // Skip if no attachment data
-              if (!secure_token && !file_id) continue
-              if (!filename) continue
-              
-              // Filter by question code - only download specific document types
+              if (!secure_token && !file_id) { continue }
+              if (!filename) { continue }
               const questionCode = cert.question_code
               let shouldDownload = false
-              
-              // Check exact matches
               if (allowedQuestionCodes.includes(questionCode)) {
                 shouldDownload = true
-              }
-              // Check for ISO pattern (Q1_ALLEGATO_ISO_*)
-              else if (questionCode && questionCode.startsWith('Q1_ALLEGATO_ISO_')) {
+              } else if (questionCode && questionCode.startsWith('Q1_ALLEGATO_ISO_')) {
                 shouldDownload = true
               }
-              
               if (!shouldDownload) {
-                console.log(`Skipping attachment ${filename} with question code: ${questionCode}`);
+                console.log(`Skipping attachment ${filename} with question code: ${questionCode}`)
                 continue
               }
-              
               console.log(`Processing allowed attachment: ${filename} (${questionCode})`)
+              attachmentsAllowed++
+              allowedForDownload.push(cert)
+            }
 
+            // Process allowed attachments with controlled concurrency
+            await runWithConcurrency(allowedForDownload, attachmentConcurrency, async (cert) => {
+              const { file_id, secure_token, filename } = cert.values
+              const questionCode = cert.question_code
+              const _attachmentProcStart = Date.now()
               try {
                 // Check if attachment already exists
                 const existingAttachment = await query(
@@ -451,7 +495,8 @@ export async function POST(request: NextRequest) {
                   attachmentId = existingAttachment.rows[0].id
                   // Skip if already successfully downloaded
                   if (existingAttachment.rows[0].download_status === 'success') {
-                    continue
+                    attachmentsSkippedExisting++
+                    return
                   }
                 } else {
                   // Insert new attachment record
@@ -482,7 +527,7 @@ export async function POST(request: NextRequest) {
                   } else if (file_id && filename) {
                     blob = await attachmentClient.downloadByFileId(file_id, filename)
                   } else {
-                    continue
+                    return
                   }
 
                   // Convert blob to buffer for database storage
@@ -503,6 +548,7 @@ export async function POST(request: NextRequest) {
                     [buffer, blob.type || 'application/octet-stream', blob.size, attachmentId]
                   )
 
+                  attachmentsDownloaded++
                   console.log(`Downloaded attachment: ${filename} (${blob.size} bytes) for supplier ${supplierData.bravo_id}`)
 
                   // --- Auto-analysis kickoff (pending + optional trigger) ---
@@ -541,6 +587,7 @@ export async function POST(request: NextRequest) {
                           if (!origin) {
                             console.warn('ANALYZE_DURING_SYNC enabled but no APP_BASE_URL/origin set; skipping immediate analysis trigger')
                           } else {
+                            analysisTriggeredImmediate++
                             const resp = await fetch(`${origin.replace(/\/$/, '')}/api/documents/analyze`, {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
@@ -561,6 +608,7 @@ export async function POST(request: NextRequest) {
                             retryBackoff: true,
                             retryDelay: 60_000 // 1 minute base delay
                           })
+                          analysisEnqueued++
                         } catch (sendErr) {
                           console.warn('Failed to enqueue document-analysis job:', sendErr)
                         }
@@ -580,13 +628,15 @@ export async function POST(request: NextRequest) {
                      WHERE id = $2`,
                     [downloadError instanceof Error ? downloadError.message : 'Unknown download error', attachmentId]
                   )
+                  attachmentsFailed++
                   console.warn(`Failed to download attachment ${filename} for supplier ${supplierData.bravo_id}:`, downloadError)
                 }
-
               } catch (attachmentError) {
                 console.warn(`Error processing attachment ${filename} for supplier ${supplierData.bravo_id}:`, attachmentError)
+              } finally {
+                attachmentsProcessingMs += Date.now() - _attachmentProcStart
               }
-            }
+            })
           } catch (certError) {
             console.warn(`Error extracting certifications for supplier ${supplierData.bravo_id}:`, certError)
           }
@@ -595,10 +645,42 @@ export async function POST(request: NextRequest) {
           suppliersFailed++
           // continue with others
         }
-      }
+      })
 
       const endTime = new Date()
       const durationSeconds = Math.round((endTime.getTime() - startTime.getTime()) / 1000)
+
+      // Prepare metrics to persist in sync log
+      const metricsDetails = {
+        timings_ms: {
+          fetch_profiles: fetchProfilesMs,
+          supplier_upserts: supplierUpsertsMs,
+          debasic_upserts: debasicUpsertsMs,
+          attachments_processing: attachmentsProcessingMs,
+          total: endTime.getTime() - startTime.getTime(),
+        },
+        counts: {
+          profiles_fetched: profiles.length,
+          suppliers_created: suppliersCreated,
+          suppliers_updated: suppliersUpdated,
+          suppliers_failed: suppliersFailed,
+          attachments_allowed: attachmentsAllowed,
+          attachments_downloaded: attachmentsDownloaded,
+          attachments_failed: attachmentsFailed,
+          attachments_skipped_existing: attachmentsSkippedExisting,
+          analysis_enqueued: analysisEnqueued,
+          analysis_triggered_immediate: analysisTriggeredImmediate,
+        },
+        config: {
+          batch_size: batchSize,
+          max_total: maxTotal ?? null,
+          use_queue_for_analysis: useQueue,
+          analyze_during_sync: process.env.ANALYZE_DURING_SYNC === 'true',
+          supplier_concurrency: supplierConcurrency,
+          attachment_concurrency: attachmentConcurrency,
+          selected_components: selectedComponents.length ? selectedComponents : null,
+        }
+      }
 
       // Update sync log with completion using existing columns
       const completedSync = await query(
@@ -610,7 +692,7 @@ export async function POST(request: NextRequest) {
            records_failed = $3,
            sync_details = COALESCE(sync_details, '{}'::jsonb) || $4::jsonb
          WHERE id = $5 RETURNING *`,
-        [jaggaerSuppliers.length, suppliersUpdated + suppliersCreated, suppliersFailed, JSON.stringify({ duration_seconds: durationSeconds }), syncLog.id],
+        [jaggaerSuppliers.length, suppliersUpdated + suppliersCreated, suppliersFailed, JSON.stringify({ duration_seconds: durationSeconds, metrics: metricsDetails }), syncLog.id],
       )
 
       // Gracefully stop queue

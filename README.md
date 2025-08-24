@@ -5,14 +5,14 @@ A comprehensive B2B platform for automated supplier certification and compliance
 ## 🚀 Features
 
 ### Core Functionality
-- **Supplier Management** - Advanced data tables with filtering, search, and bulk operations
-- **Document Verification** - Automated verification workflows with manual review capabilities
-- **Jaggaer Integration** - Real-time supplier data synchronization from Jaggaer procurement platform
-- **Italian Compliance** - DURC, SOA, ISO 9001/14001/45001, White List verification
-- **Document Processing** - OCR extraction using Mistral AI for CCIAA, DURC, ISO, SOA, VISURA documents
-- **Analytics Dashboard** - Executive KPIs, compliance monitoring, and performance metrics
-- **Workflow Management** - Task assignment, approval processes, and notification system
-- **Project Tracking** - Q1 audit and ISO migration project management
+* **Supplier Management** - Advanced data tables with filtering, search, and bulk operations
+* **Document Verification** - Automated verification workflows with manual review capabilities
+* **Jaggaer Integration** - Real-time supplier data synchronization from Jaggaer procurement platform
+* **Italian Compliance** - DURC, VISURA, CCIAA, SOA, ISO 9001/14001/45001, White List verification
+* **Document Processing** - OCR extraction using Mistral AI for CCIAA, DURC, ISO, SOA, VISURA documents
+* **Analytics Dashboard** - Executive KPIs, compliance monitoring, and performance metrics
+* **Workflow Management** - Task assignment, approval processes, and notification system
+* **Project Tracking** - Q1 audit and ISO migration project management
 
 ### Technical Features
 - **Authentication** - Supabase-based user management with role-based access
@@ -86,6 +86,13 @@ MISTRAL_MAX_TOKENS=4000
 
 # File Storage
 BLOB_READ_WRITE_TOKEN=your_vercel_blob_token
+\`\`\`
+
+#### Workflow
+\`\`\`env
+# Per-step timeout (ms) for Q1 workflow steps, including AI verifications
+# Default is 120000 (2 minutes) if unset
+WORKFLOW_STEP_TIMEOUT_MS=120000
 \`\`\`
 
 ### 3. Database Setup
@@ -168,21 +175,94 @@ docker-compose down
 - `POST /api/settings/mistral` - Configure Mistral OCR settings
 - `GET /api/connections/test-jaggaer` - Test Jaggaer connectivity
 
+### Q1 Workflow
+
+The Q1 Supplier Qualification workflow orchestrates sequential steps with optional inclusions. See `lib/workflows/q1-orchestrator.ts` for details.
+
+Supported options (`Q1WorkflowOptions`):
+
+```ts
+type Q1WorkflowOptions = {
+  includeSOA?: boolean;        // Optional SOA step (defaults to true at API level)
+  includeWhiteList?: boolean;  // Require White List docs in White List & Insurance step
+  includeCCIAA?: boolean;      // Optional CCIAA verification step
+  triggeredBy?: string;        // Free-text identifier of the initiator
+}
+```
+
+Steps (in order):
+1) Registration Check
+2) Preliminary Data Verification
+3) DURC Verification
+4) White List & Insurance
+5) VISURA Verification
+6) CCIAA Verification (optional via `includeCCIAA`)
+7) Certifications Verification (ISO)
+8) SOA Verification (optional via `includeSOA`, default enabled)
+9) Q1 Scorecard Generation
+10) Final Outcome & Follow-up
+
+Endpoints:
+
+- `POST /api/workflows/start`
+  - Body:
+    ```json
+    {
+      "supplierId": "<uuid>",
+      "options": {
+        "includeSOA": true,
+        "includeWhiteList": true,
+        "includeCCIAA": true
+      }
+    }
+    ```
+  - Returns 202 immediately; poll status endpoints.
+
+- `POST /api/workflows/start-multi`
+  - Body:
+    ```json
+    {
+      "supplierIds": ["<uuid1>", "<uuid2>"],
+      "options": { "includeSOA": true, "includeWhiteList": false, "includeCCIAA": true }
+    }
+    ```
+  - Returns 202 immediately; poll status-multi.
+
+- `GET /api/workflows/status?supplierId=<uuid>`
+  - Returns the latest workflow run (prefers full run over single-step) with `steps` array of results.
+
+- `POST /api/workflows/cancel`
+  - Body: `{ "supplierId": "<uuid>" }`
+  - Marks the latest running Q1 run as canceled. Any in-progress step will be recorded as `skip` per step constraints.
+
+- `POST /api/workflows/retry-step`
+  - Body: `{ "supplierId": "<uuid>", "stepKey": "durc" }`
+  - Runs a single step as a one-off `Q1_single_step` execution.
+
+- `POST /api/workflows/start-step`
+  - Body: `{ "supplierId": "<uuid>", "stepKey": "visura" }`
+  - Starts a specific step as a one-off `Q1_single_step` execution.
+
+Notes:
+* SOA is enabled by default in the start/start-multi endpoints; override by sending `includeSOA: false`.
+* CCIAA is optional; enable by sending `includeCCIAA: true`.
+* Each verification call is wrapped with a timeout using `WORKFLOW_STEP_TIMEOUT_MS`. On timeout, the step is persisted as `fail` with an explanatory issue.
+
 ## 🧠 AI Verification & Supplier Progress
 
 ### Overview
-This platform includes AI-powered verification of DURC documents and integrates verification progress directly into the suppliers table.
+The platform includes AI-powered verification across multiple document types (DURC, VISURA, SOA, ISO, CCIAA) and integrates verification progress directly into the suppliers table.
 
-- **AI Model**: OpenAI GPT-4o-mini (low temperature for consistent parsing)
-- **Scope**: DURC verification comparing OCR fields vs Jaggaer data
-- **Supplier Progress**: Computed from completed document analyses and stored verifications
+* **AI Model**: OpenAI (verification) + Mistral OCR (extraction)
+* **Scope**: Field comparisons between OCR-extracted values and system-of-record data with per-document rules
+* **Supplier Progress**: Computed from completed document analyses and stored verifications
 
 ### Key Endpoints
-- `POST /api/documents/verify` — Start AI verification for a completed `document_analysis`.
+* `POST /api/documents/verify` — Start AI verification for a completed `document_analysis`.
   - Body: `{ "analysisId": "uuid", "forceRerun": boolean }`
   - `forceRerun: true` deletes existing verification and re-runs it
-- `GET /api/documents/verify?analysisId=uuid` — Fetch existing verification results
-- `GET /api/suppliers` — Returns supplier rows enriched with verification progress fields
+* `GET /api/documents/verify?analysisId=uuid` — Fetch existing verification results
+* `GET /api/suppliers` — Returns supplier rows enriched with verification progress fields
 
 ### Environment Variables
 Add to `.env.local` for AI verification:
@@ -203,27 +283,30 @@ Mistral OCR and Jaggaer credentials remain as in the sections above.
 These fields are computed server-side in `app/api/suppliers/route.ts` by joining `document_analysis` and `document_verification`.
 
 ### Frontend Behavior
-- Suppliers table displays progress as “X/Y verified” with a percentage and colored indicators.
+* Suppliers table displays progress as “X/Y verified” with a percentage and colored indicators.
   - See `components/suppliers-management.tsx`.
-- Verification results UI hides Jaggaer API values for DURC Status and Expiry Date when not applicable, showing OCR data only.
+* Verification results UI hides Jaggaer API values for DURC Status and Expiry Date when not applicable, showing OCR data only.
   - See `components/document-verification-results.tsx`.
-- The verification dialog preserves the active tab after completion (no auto-switch back to Review & Validate).
+* The verification dialog preserves the active tab after completion (no auto-switch back to Review & Validate).
   - See `components/document-analysis-dialog.tsx`.
-- The verification action supports a refresh button that calls `POST /api/documents/verify` with `{ forceRerun: true }` and shows a spinner until completion.
+* The verification action supports a refresh button that calls `POST /api/documents/verify` with `{ forceRerun: true }` and shows a spinner until completion.
   - See `app/api/documents/verify/route.ts` and `components/document-verification-results.tsx`.
 
 ### Verified Fields (DURC)
-- `denominazione_ragione_sociale` — fuzzy match (≈85%)
-- `codice_fiscale` — exact match (100%)
-- `sede_legale` — fuzzy match (≈80%)
-- `risultato` — must be “RISULTA REGOLARE” (or “REGOLARE”)
-- `scadenza_validita` — valid date, not expired
+* `denominazione_ragione_sociale` — fuzzy match (≈85%)
+* `codice_fiscale` — exact match (100%)
+* `sede_legale` — fuzzy match (≈80%)
+* `risultato` — must be “RISULTA REGOLARE” (or “REGOLARE”)
+* `scadenza_validita` — valid date, not expired
 
 ### More Documentation
-- `DOCUMENT_ANALYSIS_README.md` — Mistral OCR document analysis
-- `DURC_VERIFICATION_README.md` — Detailed AI verification workflow and schema
-- `VERIFICATION_SETUP.md` — Quick setup for AI verification (OpenAI)
-- `SUPPLIER_PROFILE_VALIDATION_AND_I18N.md` — Supplier profile validation and bilingual (EN/IT) UI setup
+* `DOCUMENT_ANALYSIS_README.md` — Mistral OCR document analysis
+* `MULTI_DOCUMENT_VERIFICATION_README.md` — Multi-document verification architecture (DURC, VISURA, SOA, ISO, CCIAA)
+* `VISURA_VERIFICATION_README.md` — VISURA verification details
+* `DURC_VERIFICATION_README.md` — Detailed AI verification workflow and schema
+* `AI_VERIFICATION_SERVICE_DOCUMENTATION.md` — AI verification service architecture and usage
+* `VERIFICATION_SETUP.md` — Quick setup for AI verification (OpenAI)
+* `SUPPLIER_PROFILE_VALIDATION_AND_I18N.md` — Supplier profile validation and bilingual (EN/IT) UI setup
 
 ## 🔧 Configuration
 

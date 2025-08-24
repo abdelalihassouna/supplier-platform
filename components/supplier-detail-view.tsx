@@ -154,6 +154,20 @@ export function SupplierDetailView({ supplierId }: SupplierDetailViewProps) {
     }
   }
 
+  // Brain icon color by analysis status for immediate visual feedback
+  const getBrainIconClass = (status?: string) => {
+    switch (status) {
+      case 'completed':
+        return 'text-green-600'
+      case 'failed':
+        return 'text-red-600'
+      case 'processing':
+        return 'text-orange-600 animate-pulse'
+      default:
+        return 'text-muted-foreground'
+    }
+  }
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case "completed":
@@ -494,13 +508,18 @@ export function SupplierDetailView({ supplierId }: SupplierDetailViewProps) {
                             <Button 
                               variant="ghost" 
                               size="sm"
-                              title="Analyze document with AI"
+                              title={
+                                attachment.analysis_status === 'completed' ? 'Analysis completed' :
+                                attachment.analysis_status === 'processing' ? 'Analyzing…' :
+                                attachment.analysis_status === 'failed' ? 'Analysis failed' :
+                                'Analyze document with AI'
+                              }
                               onClick={() => {
                                 setSelectedAttachment(attachment)
                                 setAnalysisDialogOpen(true)
                               }}
                             >
-                              <Brain className="w-4 h-4" />
+                              <Brain className={cn('w-4 h-4', getBrainIconClass(attachment.analysis_status))} />
                             </Button>
                             <Button 
                               variant="ghost" 
