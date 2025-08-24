@@ -13,17 +13,22 @@ export async function POST(request: NextRequest) {
     }
 
     const orchestrator = new Q1WorkflowOrchestrator()
-    
-    // Start the workflow
-    const workflowRun = await orchestrator.runQ1Workflow(supplierId, {
-      ...options,
-      triggeredBy: 'react_flow_ui'
-    })
 
-    return NextResponse.json({ 
-      workflowRun,
-      message: 'Workflow started successfully' 
-    })
+    // Fire-and-forget start (non-blocking)
+    ;(async () => {
+      try {
+        const finalOptions: Q1WorkflowOptions = { includeSOA: true, ...options }
+        await orchestrator.runQ1Workflow(supplierId, finalOptions)
+      } catch (e) {
+        console.error('[API /workflows/start] Background run failed:', e)
+      }
+    })()
+
+    // Immediately return 202 Accepted; frontend will poll /status
+    return NextResponse.json(
+      { message: 'Workflow started', supplierId },
+      { status: 202 }
+    )
   } catch (error) {
     console.error('Error starting workflow:', error)
     return NextResponse.json(

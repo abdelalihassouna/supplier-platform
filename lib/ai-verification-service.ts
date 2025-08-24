@@ -1193,7 +1193,7 @@ FINAL OUTPUT FORMAT:
         verified_by, verification_model, processing_time_ms)
        VALUES ($1, 
                (SELECT supplier_id FROM document_analysis WHERE id = $1),
-               'DURC', 'completed', $2, $3, $4, $5, $6, 'ai_agent', 'custom_ai_service', $7)`,
+               (SELECT doc_type FROM document_analysis WHERE id = $1), 'completed', $2, $3, $4, $5, $6, 'ai_agent', 'custom_ai_service', $7)`,
       [
         analysisId,
         result.overall_result,

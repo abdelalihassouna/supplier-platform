@@ -9,6 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { useToast } from "@/hooks/use-toast"
+import { useMultiWorkflow } from "@/hooks/use-multi-workflow"
 import {
   Search,
   Filter,
@@ -25,9 +26,15 @@ import {
   RefreshCw,
   Loader2,
   AlertCircle,
+  Ban,
+  FileJson,
+  FileSpreadsheet,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import Link from "next/link"
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip"
 
 interface Supplier {
   id: string
@@ -88,6 +95,19 @@ const statusConfig = {
   EXPIRED: { label: "Expired", color: "bg-gray-100 text-gray-800", count: 0 },
 }
 
+// Q1 verification steps (SOA included by default) in order
+const Q1_STEPS = [
+  { key: 'registration', name: 'Registration Check' },
+  { key: 'preliminary', name: 'Preliminary Data Verification' },
+  { key: 'durc', name: 'DURC Verification' },
+  { key: 'whitelist_insurance', name: 'White List & Insurance' },
+  { key: 'visura', name: 'Qualification Questionnaire (VISURA)' },
+  { key: 'certifications', name: 'Certifications Verification' },
+  { key: 'soa', name: 'SOA Verification' },
+  { key: 'scorecard', name: 'Q1 Scorecard Generation' },
+  { key: 'finalize', name: 'Final Outcome & Follow-up' },
+ ] as const
+
 export function SuppliersManagement() {
   const { toast } = useToast()
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
@@ -107,6 +127,18 @@ export function SuppliersManagement() {
   const [searchQuery, setSearchQuery] = useState("")
   const [sortField, setSortField] = useState<string>("company_name")
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc")
+  const [isBulkStatusOpen, setBulkStatusOpen] = useState(false)
+  const [stepFilters, setStepFilters] = useState({ hasFail: false, running: false, allPass: false })
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null)
+  const {
+    runs: multiRuns,
+    isLoading: multiLoading,
+    isRunning: multiRunning,
+    errors: multiErrors,
+    startWorkflows,
+    refreshStatuses: refreshMultiStatuses,
+    cancelWorkflows,
+  } = useMultiWorkflow({ supplierIds: selectedSuppliers, autoRefresh: true, refreshInterval: 2000 })
 
   const fetchSuppliers = async (page = 1, search = "", status = "") => {
     try {
@@ -193,6 +225,11 @@ export function SuppliersManagement() {
     fetchSuppliers(pagination.page, searchQuery, activeFilter)
   }, [pagination.page, searchQuery, activeFilter])
 
+  // Track last updated when workflow runs change
+  useEffect(() => {
+    setLastUpdatedAt(Date.now())
+  }, [multiRuns])
+
   const totalCount = pagination.total
   const filterCounts = {
     all: totalCount,
@@ -201,9 +238,31 @@ export function SuppliersManagement() {
     ),
   }
 
+  // Apply local step-based filters on the current page
+  const filteredSuppliers = suppliers.filter((s) => {
+    const run = multiRuns[s.id]
+    if (stepFilters.running && run?.status !== 'running') return false
+    if (stepFilters.hasFail) {
+      const hasFail = Array.isArray(run?.steps) && run!.steps.some((st: any) => st?.status === 'fail')
+      if (!hasFail) return false
+    }
+    if (stepFilters.allPass) {
+      const map = new Map<string, string>()
+      if (Array.isArray(run?.steps)) {
+        for (const st of run!.steps) {
+          if (st?.step_key && st?.status) map.set(st.step_key, st.status)
+        }
+      }
+      for (const step of Q1_STEPS) {
+        if (map.get(step.key) !== 'pass') return false
+      }
+    }
+    return true
+  })
+
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedSuppliers(suppliers.map((s) => s.id))
+      setSelectedSuppliers(filteredSuppliers.map((s) => s.id))
     } else {
       setSelectedSuppliers([])
     }
@@ -228,6 +287,15 @@ export function SuppliersManagement() {
     })
   }
 
+  const formatRelativeTime = (ts: number | null) => {
+    if (!ts) return "Never"
+    const diff = Math.floor((Date.now() - ts) / 1000)
+    if (diff < 60) return `${diff}s ago`
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+    return `${Math.floor(diff / 86400)}d ago`
+  }
+
   const getVerificationProgress = (supplier: Supplier) => {
     return {
       completed: supplier.verified_documents || 0,
@@ -244,6 +312,103 @@ export function SuppliersManagement() {
   const handleFilterChange = (filter: string) => {
     setActiveFilter(filter)
     setPagination((prev) => ({ ...prev, page: 1 }))
+  }
+
+  const exportBulkJSON = () => {
+    const data: Record<string, any> = {}
+    for (const id of selectedSuppliers) {
+      const supplier = suppliers.find((s) => s.id === id)
+      data[id] = {
+        supplier: supplier
+          ? { id: supplier.id, company_name: supplier.company_name, bravo_id: supplier.bravo_id }
+          : { id },
+        run: multiRuns[id] || null,
+      }
+    }
+    const blob = new Blob([JSON.stringify({ generated_at: new Date().toISOString(), results: data }, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `bulk-workflow-results-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const exportBulkCSV = () => {
+    const header = [
+      'SupplierID',
+      'BravoID',
+      'CompanyName',
+      'RunID',
+      'RunStatus',
+      'Overall',
+      'StepOrder',
+      'StepKey',
+      'StepName',
+      'StepStatus',
+      'Issues',
+      'StepStartedAt',
+      'StepEndedAt',
+    ]
+    const rows: string[][] = [header]
+
+    const esc = (v: any) => {
+      const s = v == null ? '' : String(v)
+      if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"'
+      return s
+    }
+
+    for (const id of selectedSuppliers) {
+      const supplier = suppliers.find((s) => s.id === id)
+      const run = multiRuns[id]
+      if (run && Array.isArray(run.steps) && run.steps.length > 0) {
+        for (const step of run.steps) {
+          rows.push([
+            esc(id),
+            esc(supplier?.bravo_id || ''),
+            esc(supplier?.company_name || ''),
+            esc(run.id),
+            esc(run.status),
+            esc((run as any).overall || ''),
+            esc(step.order_index),
+            esc(step.step_key),
+            esc(step.name),
+            esc(step.status),
+            esc((step.issues || []).join(' | ')),
+            esc(step.started_at || ''),
+            esc(step.ended_at || ''),
+          ])
+        }
+      } else {
+        // No run found; still include a row for visibility
+        rows.push([
+          esc(id),
+          esc(supplier?.bravo_id || ''),
+          esc(supplier?.company_name || ''),
+          '',
+          'no_run',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+        ])
+      }
+    }
+
+    const csv = rows.map((r) => r.join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `bulk-workflow-results-${Date.now()}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   if (error && !suppliers.length) {
@@ -305,6 +470,66 @@ export function SuppliersManagement() {
         </div>
       </div>
 
+      {/* Sticky Bulk Toolbar */}
+      {selectedSuppliers.length > 0 && (
+        <div className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 py-2 px-2 rounded-b-md">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-muted-foreground">
+              {selectedSuppliers.length} selected • Last updated: {formatRelativeTime(lastUpdatedAt)}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  try {
+                    await startWorkflows({})
+                    toast({ title: "Bulk Verification Started", description: "Workflows are running in the background." })
+                  } catch (e) {
+                    toast({ title: "Failed to start", description: e instanceof Error ? e.message : "Unknown error", variant: "destructive" })
+                  }
+                }}
+                disabled={multiLoading}
+              >
+                {multiLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                Bulk Verify
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => refreshMultiStatuses()} disabled={multiLoading}>
+                Refresh Results
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setBulkStatusOpen(true)}>
+                <Eye className="w-4 h-4 mr-2" />
+                View Status
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  try {
+                    await cancelWorkflows()
+                    toast({ title: 'Bulk Cancel Requested', description: 'All selected suppliers have been requested to cancel.' })
+                  } catch (e) {
+                    toast({ title: 'Cancel failed', description: e instanceof Error ? e.message : 'Unknown error', variant: 'destructive' })
+                  }
+                }}
+                disabled={multiLoading || !multiRunning}
+              >
+                <Ban className="w-4 h-4 mr-2" />
+                Cancel All
+              </Button>
+              <Button variant="outline" size="sm" onClick={exportBulkJSON} disabled={selectedSuppliers.length === 0}>
+                <FileJson className="w-4 h-4 mr-2" />
+                Export JSON
+              </Button>
+              <Button variant="outline" size="sm" onClick={exportBulkCSV} disabled={selectedSuppliers.length === 0}>
+                <FileSpreadsheet className="w-4 h-4 mr-2" />
+                Export CSV
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Filters and Search */}
       <Card>
         <CardHeader>
@@ -324,17 +549,7 @@ export function SuppliersManagement() {
                 Advanced Filters
               </Button>
             </div>
-            {selectedSuppliers.length > 0 && (
-              <div className="flex items-center space-x-2">
-                <span className="text-sm text-muted-foreground">{selectedSuppliers.length} selected</span>
-                <Button variant="outline" size="sm">
-                  Bulk Verify
-                </Button>
-                <Button variant="outline" size="sm">
-                  Export Selected
-                </Button>
-              </div>
-            )}
+            {/* Bulk actions moved to sticky toolbar */}
           </div>
         </CardHeader>
         <CardContent>
@@ -366,6 +581,47 @@ export function SuppliersManagement() {
               </Button>
             ))}
           </div>
+
+          {/* Legend + Step Filters */}
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3 text-xs">
+              <div className="flex items-center gap-1">
+                <span className="inline-block w-3 h-3 rounded-full bg-green-500" /> Pass
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="inline-block w-3 h-3 rounded-full bg-red-500" /> Fail
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="inline-block w-3 h-3 rounded-full bg-gray-400" /> Skip
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="inline-block w-3 h-3 rounded-full bg-gray-300" /> Pending
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant={stepFilters.hasFail ? "default" : "outline"}
+                size="sm"
+                onClick={() => setStepFilters((p) => ({ ...p, hasFail: !p.hasFail }))}
+              >
+                Has fail
+              </Button>
+              <Button
+                variant={stepFilters.running ? "default" : "outline"}
+                size="sm"
+                onClick={() => setStepFilters((p) => ({ ...p, running: !p.running }))}
+              >
+                Running
+              </Button>
+              <Button
+                variant={stepFilters.allPass ? "default" : "outline"}
+                size="sm"
+                onClick={() => setStepFilters((p) => ({ ...p, allPass: !p.allPass }))}
+              >
+                All pass
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -383,7 +639,7 @@ export function SuppliersManagement() {
                 <TableRow>
                   <TableHead className="w-12">
                     <Checkbox
-                      checked={selectedSuppliers.length === suppliers.length && suppliers.length > 0}
+                      checked={selectedSuppliers.length === filteredSuppliers.length && filteredSuppliers.length > 0}
                       onCheckedChange={handleSelectAll}
                     />
                   </TableHead>
@@ -417,8 +673,8 @@ export function SuppliersManagement() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {suppliers.map((supplier) => {
-                  const progress = getVerificationProgress(supplier)
+                {filteredSuppliers.map((supplier) => {
+                  const run = multiRuns[supplier.id]
                   return (
                     <TableRow key={supplier.id} className="hover:bg-muted/50">
                       <TableCell>
@@ -460,26 +716,60 @@ export function SuppliersManagement() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between text-sm">
-                            <span>
-                              {progress.completed}/{progress.total} verified
-                            </span>
-                            <span className="text-muted-foreground">{progress.percentage}%</span>
-                          </div>
-                          <div className="flex space-x-1">
-                            {Array.from({ length: progress.total }).map((_, index) => (
-                              <div
-                                key={index}
-                                className={cn(
-                                  "w-3 h-3 rounded-full",
-                                  index < progress.completed ? "bg-green-500" : "bg-gray-300",
-                                )}
-                                title={`Certification ${index + 1}: ${index < progress.completed ? "completed" : "pending"}`}
-                              />
-                            ))}
-                          </div>
-                        </div>
+                        {(() => {
+                          const stepStatusByKey = new Map<string, string>()
+                          if (run?.steps) {
+                            for (const s of run.steps) {
+                              if (s?.step_key && s?.status) stepStatusByKey.set(s.step_key, s.status)
+                            }
+                          }
+                          const total = Q1_STEPS.length
+                          const completed = Q1_STEPS.reduce((acc, s) => acc + (stepStatusByKey.get(s.key) === 'pass' ? 1 : 0), 0)
+                          const percent = Math.round((completed / total) * 100)
+                          return (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between text-sm">
+                                <span>
+                                  {completed}/{total} verified
+                                </span>
+                                <span className="text-muted-foreground">{percent}%</span>
+                              </div>
+                              <div className="flex space-x-1">
+                                {Q1_STEPS.map((s) => {
+                                  let st = stepStatusByKey.get(s.key)
+                                  if (!st && run && run.status !== 'running') {
+                                    st = 'skip'
+                                  }
+                                  const color = st === 'pass' ? 'bg-green-500' : st === 'fail' ? 'bg-red-500' : st === 'skip' ? 'bg-gray-400' : 'bg-gray-300'
+                                  const detail = run?.steps?.find((x: any) => x?.step_key === s.key)
+                                  const label = `${s.name}: ${st ? st : run ? 'pending' : 'not started'}`
+                                  return (
+                                    <Tooltip key={s.key}>
+                                      <TooltipTrigger asChild>
+                                        <div
+                                          className={cn("w-3 h-3 rounded-full", color)}
+                                          aria-label={label}
+                                          role="img"
+                                        />
+                                      </TooltipTrigger>
+                                      <TooltipContent sideOffset={6}>
+                                        <div className="flex flex-col gap-0.5">
+                                          <div className="font-medium">{s.name}</div>
+                                          <div className="text-xs">Status: {st ? st : run ? 'pending' : 'not started'}</div>
+                                          {detail?.started_at && <div className="text-xs">Started: {formatDate(detail.started_at)}</div>}
+                                          {detail?.ended_at && <div className="text-xs">Ended: {formatDate(detail.ended_at)}</div>}
+                                          {Array.isArray(detail?.issues) && detail!.issues.length > 0 && (
+                                            <div className="text-xs">Issues: {detail!.issues.length}</div>
+                                          )}
+                                        </div>
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          )
+                        })()}
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center text-sm text-muted-foreground">
@@ -524,6 +814,124 @@ export function SuppliersManagement() {
           )}
         </CardContent>
       </Card>
+
+      {/* Bulk Verification Status Sheet (slide-over) */}
+      <Sheet open={isBulkStatusOpen} onOpenChange={setBulkStatusOpen}>
+        <SheetContent side="right" className="sm:max-w-xl w-full">
+          <SheetHeader>
+            <SheetTitle>Bulk Verification Status</SheetTitle>
+            <SheetDescription>{multiRunning ? "Running... auto-refreshing" : "Idle"}</SheetDescription>
+          </SheetHeader>
+          <div className="px-4 pb-4">
+            <div className="flex items-center space-x-2 mb-3">
+              <Button variant="outline" size="sm" onClick={() => refreshMultiStatuses()} disabled={multiLoading}>
+                {multiLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                Refresh
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  try {
+                    await cancelWorkflows()
+                    toast({ title: 'Bulk Cancel Requested', description: 'All selected suppliers have been requested to cancel.' })
+                  } catch (e) {
+                    toast({ title: 'Cancel failed', description: e instanceof Error ? e.message : 'Unknown error', variant: 'destructive' })
+                  }
+                }}
+                disabled={multiLoading || !multiRunning}
+              >
+                <Ban className="w-4 h-4 mr-2" />
+                Cancel All
+              </Button>
+              <Button variant="outline" size="sm" onClick={exportBulkJSON}>
+                <FileJson className="w-4 h-4 mr-2" />
+                Export JSON
+              </Button>
+              <Button variant="outline" size="sm" onClick={exportBulkCSV}>
+                <FileSpreadsheet className="w-4 h-4 mr-2" />
+                Export CSV
+              </Button>
+            </div>
+            <ScrollArea className="h-[75vh] pr-4">
+              <div className="space-y-4">
+                {selectedSuppliers.length === 0 && (
+                  <p className="text-sm text-muted-foreground">Select suppliers to view their verification status.</p>
+                )}
+                {selectedSuppliers.map((id) => {
+                  const supplier = suppliers.find((s) => s.id === id)
+                  const run = multiRuns[id]
+                  const status = run?.status || 'no_run'
+                  return (
+                    <div key={id} className="border rounded-md p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center">
+                            <Building2 className="w-4 h-4 text-primary" />
+                          </div>
+                          <div>
+                            <p className="font-medium">{supplier?.company_name || id}</p>
+                            <p className="text-xs text-muted-foreground">{supplier?.fiscal_code || supplier?.bravo_id}</p>
+                          </div>
+                        </div>
+                        <Badge
+                          className={cn(
+                            "text-xs",
+                            status === 'running'
+                              ? 'bg-blue-100 text-blue-800'
+                              : status === 'completed'
+                              ? 'bg-green-100 text-green-800'
+                              : status === 'failed'
+                              ? 'bg-red-100 text-red-800'
+                              : status === 'canceled'
+                              ? 'bg-gray-100 text-gray-800'
+                              : 'bg-yellow-100 text-yellow-800'
+                          )}
+                        >
+                          {status === 'no_run' ? 'No Run' : status}
+                        </Badge>
+                      </div>
+                      {multiErrors[id] && (
+                        <p className="mt-2 text-sm text-destructive">{multiErrors[id]}</p>
+                      )}
+                      {run && run.steps?.length > 0 && (
+                        <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {run.steps.map((step) => (
+                            <div key={step.id || step.step_key + step.order_index} className="border rounded p-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-sm font-medium">{step.name}</span>
+                                <Badge
+                                  className={cn(
+                                    "text-2xs",
+                                    step.status === 'pass'
+                                      ? 'bg-green-100 text-green-800'
+                                      : step.status === 'fail'
+                                      ? 'bg-red-100 text-red-800'
+                                      : 'bg-gray-100 text-gray-800'
+                                  )}
+                                >
+                                  {step.status}
+                                </Badge>
+                              </div>
+                              {step.issues && step.issues.length > 0 && (
+                                <ul className="mt-2 list-disc list-inside text-xs text-muted-foreground space-y-1">
+                                  {step.issues.map((iss, idx) => (
+                                    <li key={idx}>{iss}</li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </ScrollArea>
+          </div>
+        </SheetContent>
+      </Sheet>
 
       {pagination.pages > 1 && (
         <div className="flex items-center justify-between">

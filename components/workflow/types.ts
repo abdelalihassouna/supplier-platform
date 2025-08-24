@@ -7,6 +7,7 @@ export interface BuilderNodeData {
   label: string
   type: NodeKind
   verificationType?: VerificationKind
+  analysisId?: string
   config?: {
     timeout?: number
     retries?: number

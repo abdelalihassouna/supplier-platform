@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react'
+import type { WorkflowRunResult } from '@/lib/workflows/q1-orchestrator'
 import ReactFlow, {
   Node,
   Edge,
@@ -30,6 +31,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useToast } from '@/components/ui/use-toast'
+import { Separator } from '@/components/ui/separator'
+import { DocumentVerificationResults } from '@/components/document-verification-results'
 import {
   Dialog,
   DialogContent,
@@ -63,8 +66,8 @@ const nodeTypes: NodeTypes = {
 export function WorkflowBuilder() {
   const { toast } = useToast()
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node<BuilderNodeData>[]>([])
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge[]>([])
+  const [nodes, setNodes, onNodesChange] = useNodesState<BuilderNodeData>([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState([])
   const [selectedNode, setSelectedNode] = useState<Node<BuilderNodeData> | null>(null)
 
   const [workflowName, setWorkflowName] = useState('New Workflow')
@@ -81,8 +84,17 @@ export function WorkflowBuilder() {
 
   const [autoFit, setAutoFit] = useState<boolean>(true)
 
+  // Run workflow (supplier-based) state
+  const [showRunDialog, setShowRunDialog] = useState(false)
+  const [runSupplierId, setRunSupplierId] = useState('')
+  const [includeSOA, setIncludeSOA] = useState(true)
+  const [includeWhiteList, setIncludeWhiteList] = useState(false)
+  const [runLoading, setRunLoading] = useState(false)
+  const [lastRun, setLastRun] = useState<WorkflowRunResult | null>(null)
+
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null)
+  const pollTimerRef = useRef<number | null>(null)
 
   const hasStart = useMemo(() => nodes.some((n) => n.data.type === 'start'), [nodes])
 
@@ -173,6 +185,7 @@ export function WorkflowBuilder() {
           label: template.label,
           type: template.type,
           verificationType: template.verificationType,
+          analysisId: '',
           config: {
             timeout: 300,
             retries: 3,
@@ -390,6 +403,73 @@ export function WorkflowBuilder() {
     }
   }
 
+  // Start workflow for a supplier (calls /api/workflows/start)
+  const startWorkflowForSupplier = async () => {
+    if (!runSupplierId.trim()) {
+      toast({ title: 'Supplier ID required', description: 'Please enter a supplier ID to run the workflow.', variant: 'destructive' })
+      return
+    }
+    setRunLoading(true)
+    const supplierId = runSupplierId.trim()
+    // Optimistically set a running state and close dialog
+    setLastRun((prev: WorkflowRunResult | null) => ({
+      id: prev?.id || 'pending',
+      supplier_id: supplierId,
+      workflow_type: 'Q1_supplier_qualification',
+      status: 'running',
+      overall: undefined,
+      notes: [],
+      steps: prev?.steps || [],
+      started_at: new Date().toISOString(),
+      ended_at: undefined,
+    }))
+    setShowRunDialog(false)
+    setRunLoading(false)
+
+    // Kick off the workflow in background
+    ;(async () => {
+      try {
+        const res = await fetch('/api/workflows/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ supplierId, options: { includeSOA, includeWhiteList } }),
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => null)
+          throw new Error(data?.error || 'Failed to start workflow')
+        }
+        const data = await res.json()
+        if (data?.workflowRun) {
+          setLastRun(data.workflowRun)
+          toast({ title: 'Workflow completed', description: `Status: ${data.workflowRun.status}` })
+        } else {
+          // In case API chooses to respond early
+          toast({ title: 'Workflow started', description: 'Monitoring progress…' })
+        }
+      } catch (err) {
+        toast({ title: 'Run failed', description: String((err as Error).message), variant: 'destructive' })
+      }
+    })()
+
+    // Ensure first status fetch happens shortly after starting
+    setTimeout(() => {
+      refreshWorkflowStatus()
+    }, 400)
+  }
+
+  // Fetch latest workflow status for current supplier
+  const refreshWorkflowStatus = async () => {
+    const supplierId = lastRun?.supplier_id || runSupplierId
+    if (!supplierId) return
+    try {
+      const res = await fetch(`/api/workflows/status?supplierId=${encodeURIComponent(supplierId)}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data?.workflowRun) setLastRun(data.workflowRun)
+      }
+    } catch {}
+  }
+
   // Keyboard shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -409,6 +489,26 @@ export function WorkflowBuilder() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [selectedNode])
+
+  // Auto-poll workflow status while running
+  useEffect(() => {
+    const isRunning = lastRun?.status === 'running'
+    if (isRunning && !pollTimerRef.current) {
+      pollTimerRef.current = window.setInterval(() => {
+        refreshWorkflowStatus()
+      }, 2000)
+    }
+    if (!isRunning && pollTimerRef.current) {
+      window.clearInterval(pollTimerRef.current)
+      pollTimerRef.current = null
+    }
+    return () => {
+      if (pollTimerRef.current) {
+        window.clearInterval(pollTimerRef.current)
+        pollTimerRef.current = null
+      }
+    }
+  }, [lastRun?.status])
 
   // Auto-fit view on changes (toggleable)
   useEffect(() => {
@@ -528,6 +628,17 @@ export function WorkflowBuilder() {
               <span className="ml-1 hidden sm:inline">Test</span>
             </Button>
 
+            {/* Run Q1 workflow for supplier */}
+            <Button
+              size="sm"
+              variant="default"
+              title="Run Q1 workflow for a supplier"
+              onClick={() => setShowRunDialog(true)}
+            >
+              <Play className="w-4 h-4" />
+              <span className="ml-1 hidden sm:inline">Run</span>
+            </Button>
+
             {/* Compact actions toolbar to save vertical space */}
             <div className="inline-flex items-center rounded-md border border-gray-200 overflow-hidden">
               <Button size="sm" className="rounded-none" onClick={handleSaveClick} disabled={isSaving} title="Save to Database">
@@ -556,6 +667,48 @@ export function WorkflowBuilder() {
             </div>
           </div>
         </div>
+
+        {/* Latest run summary banner */}
+        {lastRun && (
+          <div className="bg-white border-b border-gray-200 px-4 py-2 text-sm">
+            <div className="flex items-center justify-between gap-2">
+              <div className="truncate">
+                <span className="font-medium">Last run</span>: status <Badge variant="outline" className="ml-1">{lastRun.status}</Badge>
+                {lastRun.overall && (
+                  <>
+                    <span className="mx-1">•</span>
+                    <span>overall</span> <Badge variant="secondary" className="ml-1">{lastRun.overall}</Badge>
+                  </>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={async () => {
+                  try {
+                    const supplierId = lastRun?.supplier_id || runSupplierId
+                    if (!supplierId) return
+                    const res = await fetch(`/api/workflows/status?supplierId=${encodeURIComponent(supplierId)}`)
+                    if (res.ok) {
+                      const data = await res.json()
+                      if (data?.workflowRun) setLastRun(data.workflowRun)
+                    }
+                  } catch {}
+                }}>Refresh</Button>
+              </div>
+            </div>
+            {Array.isArray(lastRun?.steps) && lastRun.steps.length > 0 && (
+              <div className="mt-2 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                {lastRun.steps.map((s: any) => (
+                  <div key={s.step_key} className="flex items-center justify-between rounded border px-2 py-1 bg-gray-50">
+                    <span className="truncate mr-2">{s.name}</span>
+                    <Badge variant={s.status === 'pass' ? 'default' : s.status === 'fail' ? 'destructive' : 'outline'}>
+                      {s.status.toUpperCase()}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="flex-1 relative">
           <ReactFlowProvider>
@@ -641,6 +794,16 @@ export function WorkflowBuilder() {
                   </Select>
                 </div>
 
+                <div>
+                  <Label htmlFor="analysis-id">Analysis ID</Label>
+                  <Input
+                    id="analysis-id"
+                    value={selectedNode.data.analysisId || ''}
+                    onChange={(e) => updateNodeData(selectedNode.id, { analysisId: e.target.value })}
+                    placeholder="Enter analysis UUID"
+                  />
+                </div>
+
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <Label htmlFor="timeout">Timeout (s)</Label>
@@ -693,6 +856,19 @@ export function WorkflowBuilder() {
                   />
                   <Label htmlFor="required">Required</Label>
                 </div>
+
+                {selectedNode.data.analysisId && selectedNode.data.verificationType && (
+                  <>
+                    <Separator className="my-2" />
+                    <div className="space-y-2">
+                      <Label className="text-sm">AI Verification Results</Label>
+                      <DocumentVerificationResults
+                        analysisId={selectedNode.data.analysisId}
+                        docType={selectedNode.data.verificationType as 'DURC' | 'VISURA' | 'SOA' | 'ISO' | 'CCIAA'}
+                      />
+                    </div>
+                  </>
+                )}
               </>
             )}
 
@@ -813,9 +989,9 @@ export function WorkflowBuilder() {
             <div>
               <Label className="text-sm font-medium">Node Types</Label>
               <div className="flex flex-wrap gap-1 mt-2">
-                {Array.from(new Set(nodes.map(n => n.data.verificationType || n.data.type))).map(type => (
-                  <Badge key={type} variant="secondary" className="text-xs">
-                    {type}
+                {Array.from(new Set((nodes.map((n) => (n.data.verificationType ?? n.data.type) as string)))).map((t) => (
+                  <Badge key={t} variant="secondary" className="text-xs">
+                    {t}
                   </Badge>
                 ))}
               </div>
@@ -836,6 +1012,72 @@ export function WorkflowBuilder() {
                 <>
                   <Save className="w-4 h-4 mr-2" />
                   Save Template
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Run Workflow Dialog */}
+      <Dialog open={showRunDialog} onOpenChange={setShowRunDialog}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Run Q1 Workflow</DialogTitle>
+            <DialogDescription>
+              Enter the Supplier ID. The system will retrieve relevant analyses (DURC, VISURA, ISO, SOA, CCIAA) and execute the workflow.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div>
+              <Label htmlFor="run-supplier-id">Supplier ID</Label>
+              <Input
+                id="run-supplier-id"
+                placeholder="e.g. b91a414b-a632-42ce-8584-47e0ca325a61"
+                value={runSupplierId}
+                onChange={(e) => setRunSupplierId(e.target.value)}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex items-center gap-2">
+                <input
+                  id="opt-include-soa"
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={includeSOA}
+                  onChange={(e) => setIncludeSOA(e.target.checked)}
+                />
+                <Label htmlFor="opt-include-soa">Include SOA</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  id="opt-include-whitelist"
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={includeWhiteList}
+                  onChange={(e) => setIncludeWhiteList(e.target.checked)}
+                />
+                <Label htmlFor="opt-include-whitelist">Check White List</Label>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowRunDialog(false)} disabled={runLoading}>
+              Cancel
+            </Button>
+            <Button onClick={startWorkflowForSupplier} disabled={runLoading || !runSupplierId.trim()}>
+              {runLoading ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Running...
+                </>
+              ) : (
+                <>
+                  <Play className="w-4 h-4 mr-2" />
+                  Start
                 </>
               )}
             </Button>

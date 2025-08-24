@@ -16,8 +16,9 @@ export async function GET(request: NextRequest) {
     // Get the latest workflow run for this supplier
     const workflowRunQuery = await db.query(
       `SELECT * FROM workflow_runs 
-       WHERE supplier_id = $1 AND workflow_type = 'Q1_supplier_qualification'
-       ORDER BY created_at DESC LIMIT 1`,
+       WHERE supplier_id = $1 AND workflow_type IN ('Q1_supplier_qualification', 'Q1_single_step')
+       ORDER BY (workflow_type = 'Q1_single_step') ASC, created_at DESC
+       LIMIT 1`,
       [supplierId]
     )
 
