@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
           wr.*,
           ROW_NUMBER() OVER (
             PARTITION BY wr.supplier_id
-            ORDER BY (wr.workflow_type = 'Q1_single_step') ASC, wr.created_at DESC
+            ORDER BY wr.created_at DESC
           ) AS rn
         FROM workflow_runs wr
         WHERE wr.supplier_id = ANY($1::uuid[]) 

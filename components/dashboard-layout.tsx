@@ -282,36 +282,70 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         {/* Header */}
         <header className="sticky top-0 z-30 bg-background border-b border-border">
           <div className="flex h-16 items-center justify-between px-6">
-            {/* Breadcrumb */}
-            <div className="flex items-center space-x-2 text-sm text-muted-foreground">
-              <span>{generateBreadcrumb()}</span>
-            </div>
+            {/* Breadcrumb (hidden on single-level routes to avoid duplicating H1) */}
+            {pathname.split("/").filter(Boolean).length > 1 ? (
+              <div className="flex items-center space-x-2 text-sm text-muted-foreground">
+                <span>{generateBreadcrumb()}</span>
+              </div>
+            ) : (
+              <div />
+            )}
 
             {/* Header Actions */}
             <div className="flex items-center space-x-4">
-              {/* Search */}
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input placeholder="Search suppliers, documents..." className="pl-10 w-80" />
-              </div>
+              {/* Search (hidden on /suppliers routes) */}
+              {!pathname.startsWith('/suppliers') && (
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <Input placeholder="Search suppliers, documents..." className="pl-10 w-80" />
+                </div>
+              )}
 
-              {/* Sync Controls */}
-              <div className="flex items-center space-x-2">
-                <Button variant="outline" size="sm" onClick={() => handleSync("incremental")} disabled={syncing}>
-                  {syncing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sync className="w-4 h-4 mr-2" />}
-                  Sync from Jaggaer
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => handleSync("full")} disabled={syncing}>
-                  {syncing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sync className="w-4 h-4 mr-2" />}
-                  Full Sync
-                </Button>
-              </div>
+              {/* Sync Controls (grouped) */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={syncing}>
+                    {syncing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sync className="w-4 h-4 mr-2" />}
+                    Sync
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuLabel>Sync from Jaggaer</DropdownMenuLabel>
+                  <DropdownMenuItem onClick={() => handleSync("incremental")} disabled={syncing}>
+                    <Sync className="w-4 h-4 mr-2" />
+                    Incremental Sync
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleSync("full")} disabled={syncing}>
+                    <Sync className="w-4 h-4 mr-2" />
+                    Full Sync
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
 
-              {/* Export */}
-              <Button variant="outline" size="sm">
-                <Download className="w-4 h-4 mr-2" />
-                Export
-              </Button>
+              {/* Export (grouped) */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    <Download className="w-4 h-4 mr-2" />
+                    Export
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuLabel>Export Suppliers</DropdownMenuLabel>
+                  <DropdownMenuItem
+                    onClick={() => window.open('/api/export?type=suppliers&format=csv', '_blank')}
+                  >
+                    <Download className="w-4 h-4 mr-2" />
+                    Export CSV
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => window.open('/api/export?type=suppliers&format=json', '_blank')}
+                  >
+                    <Download className="w-4 h-4 mr-2" />
+                    Export JSON
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
 
               {/* Notifications */}
               <Button variant="ghost" size="sm" className="relative">
