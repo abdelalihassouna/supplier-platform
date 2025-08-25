@@ -201,7 +201,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 </div>
                 <div className="flex flex-col min-w-0">
                   <span className="font-bold text-lg text-sidebar-foreground truncate">
-                    V-AI
+                    <i>Pizzarotti</i> <span className="text-primary">V-AI</span>
                   </span>
                   <span className="text-xs text-muted-foreground/80 truncate">
                     Vendor AI

@@ -236,8 +236,10 @@ export function AnalyticsReporting() {
     })
   }
 
-  const formatSeconds = (seconds?: number) => {
-    if (seconds === undefined || seconds === null) return "-"
+  const formatSeconds = (sec?: number | string | null) => {
+    if (sec === undefined || sec === null) return "-"
+    const seconds = typeof sec === "string" ? parseFloat(sec) : sec
+    if (Number.isNaN(seconds)) return "-"
     if (seconds < 1) return `${Math.round(seconds * 1000)}ms`
     if (seconds < 10) return `${seconds.toFixed(1)}s`
     if (seconds < 60) return `${Math.round(seconds)}s`
